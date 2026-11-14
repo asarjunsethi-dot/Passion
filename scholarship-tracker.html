@@ -1,0 +1,259 @@
+<title>Scholarship Tracker</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: one narrow working column. Progress summary on top, then a deadline sorted list that expands in place for editing. */
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --fg:#14202b; --muted:#5d6b78; --line:#dde3e9;
+  --accent:#0b6e6e; --accent-fg:#ffffff; --accent-soft:#dff1ef;
+  --warn:#a55200; --warn-soft:#fdecd6; --bad:#b3261e; --bad-soft:#fbe3e0; --good:#1b7a3d; --good-soft:#ddf3e4;
+  --font-display:"Bricolage Grotesque","Inter",system-ui,sans-serif;
+  --font-body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f171e; --surface:#17222c; --fg:#e8eef3; --muted:#92a2b1; --line:#283745;
+  --accent:#4fc3bd; --accent-fg:#06201f; --accent-soft:#16363a;
+  --warn:#f0a95c; --warn-soft:#3a2a15; --bad:#ff8d84; --bad-soft:#40211f; --good:#6fd194; --good-soft:#173324; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f171e; --surface:#17222c; --fg:#e8eef3; --muted:#92a2b1; --line:#283745;
+  --accent:#4fc3bd; --accent-fg:#06201f; --accent-soft:#16363a;
+  --warn:#f0a95c; --warn-soft:#3a2a15; --bad:#ff8d84; --bad-soft:#40211f; --good:#6fd194; --good-soft:#173324; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--font-body);padding-block:24px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+main{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+h1{font:700 30px/1.15 var(--font-display);margin:0;text-wrap:balance}
+h2{font:600 16px var(--font-display);margin:0}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+header{display:flex;flex-direction:column;gap:6px}
+.sub{color:var(--muted);margin:0}
+.summary{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:14px}
+.bar-top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.pct{font:700 34px/1 var(--font-display);font-variant-numeric:tabular-nums}
+.bar{height:12px;background:var(--line);border-radius:6px;overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.seg-awarded{background:var(--good)}.seg-submitted{background:var(--accent)}.seg-declined{background:var(--muted)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:13px}
+.legend b{color:var(--fg);font-variant-numeric:tabular-nums}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.stat{border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.stat span{display:block;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.stat strong{font:700 20px var(--font-display);font-variant-numeric:tabular-nums}
+.stat.urgent strong{color:var(--warn)}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:6px 13px;cursor:pointer;font-size:14px}
+.tab[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.tab small{opacity:.75;margin-left:4px;font-variant-numeric:tabular-nums}
+.search{flex:1 1 180px;min-width:0}
+input[type=text],input[type=url],input[type=number],input[type=date],input[type=search],select,textarea{width:100%;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-width:0}
+textarea{min-height:72px;resize:vertical}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:8px 14px;cursor:pointer;font-weight:500}
+.btn.primary{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+.btn.danger{color:var(--bad)}
+.list{display:flex;flex-direction:column;gap:8px;padding:0;margin:0;list-style:none}
+.item{background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.item.done .title{color:var(--muted)}
+.row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:12px 14px}
+.check{width:26px;height:26px;border-radius:50%;border:2px solid var(--line);background:var(--surface);cursor:pointer;display:grid;place-items:center;padding:0;color:var(--accent-fg)}
+.check[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
+.check svg{width:14px;height:14px;opacity:0}.check[aria-checked="true"] svg{opacity:1}
+.title{font-weight:600;overflow-wrap:anywhere}
+.meta{color:var(--muted);font-size:13px;display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:2px}
+.right{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.chip{font-size:12px;font-weight:600;border-radius:999px;padding:2px 9px;white-space:nowrap;font-variant-numeric:tabular-nums;background:var(--accent-soft);color:var(--accent)}
+.chip.soon{background:var(--warn-soft);color:var(--warn)}.chip.late{background:var(--bad-soft);color:var(--bad)}
+.chip.won{background:var(--good-soft);color:var(--good)}.chip.neutral{background:var(--line);color:var(--muted)}
+.chip.check-date{background:transparent;border:1px dashed var(--warn);color:var(--warn)}
+.more{border:0;background:none;color:var(--accent);cursor:pointer;font-size:13px;padding:0}
+.panel{border-top:1px solid var(--line);padding:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.panel label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;min-width:0}
+.panel .wide{grid-column:1/-1}
+.panel .actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.panel label.inline{flex-direction:row;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:14px;color:var(--fg)}
+.panel label.inline input{width:auto}
+a{color:var(--accent)}
+.add{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.add label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;min-width:0}
+.empty{background:var(--surface);border:1px dashed var(--line);border-radius:12px;padding:28px 18px;text-align:center;color:var(--muted)}
+.note{color:var(--muted);font-size:13px}
+.status-line{font-size:13px;color:var(--warn)}
+@media (max-width:520px){.row{grid-template-columns:auto minmax(0,1fr)}.right{grid-column:2;flex-direction:row;align-items:center;flex-wrap:wrap}}
+@media (prefers-reduced-motion:no-preference){.bar i{transition:width .35s ease}}
+</style>
+
+<main>
+  <header>
+    <h1>Scholarship Tracker</h1>
+    <p class="sub">Every application in one list, sorted by deadline. Tick the circle when you submit.</p>
+  </header>
+
+  <section class="summary" aria-label="Progress">
+    <div class="bar-top">
+      <div><span class="pct" id="pct">0%</span> <span class="sub" id="pctText">of applications finished</span></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="bar" role="progressbar" aria-label="Application progress" aria-valuemin="0" aria-valuemax="100" id="bar"></div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <div class="controls">
+    <div class="tabs" id="tabs" role="group" aria-label="Filter by status"></div>
+    <input class="search" type="search" id="q" placeholder="Search name or organization" aria-label="Search">
+    <select id="sort" aria-label="Sort" style="width:auto">
+      <option value="deadline">Soonest deadline</option>
+      <option value="amount">Largest award</option>
+      <option value="name">Name</option>
+    </select>
+    <button class="btn primary" id="toggleAdd" type="button">Add scholarship</button>
+  </div>
+
+  <form class="add" id="addForm" hidden>
+    <label>Name<input type="text" id="aName" required></label>
+    <label>Organization<input type="text" id="aOrg"></label>
+    <label>Award amount in dollars<input type="number" id="aAmount" min="0" step="1"></label>
+    <label>Deadline<input type="date" id="aDeadline"></label>
+    <label style="grid-column:1/-1">Application link<input type="url" id="aUrl" placeholder="https://"></label>
+    <div style="grid-column:1/-1;display:flex;gap:10px"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="cancelAdd">Cancel</button></div>
+  </form>
+
+  <p class="status-line" id="loadNote" hidden></p>
+  <ul class="list" id="list"></ul>
+  <p class="note">Dates marked "Confirm date" came from last year's typical cycle. Open the official site, then tick Verified in the edit panel to clear the marker.</p>
+</main>
+
+<script>
+const STATUSES=[["todo","To do"],["progress","In progress"],["submitted","Submitted"],["awarded","Awarded"],["declined","Not selected"],["skipped","Skipped"]];
+const FILTERS=[["all","All",()=>true],["open","Open",s=>s==="todo"||s==="progress"],["submitted","Submitted",s=>s==="submitted"],["results","Results",s=>s==="awarded"||s==="declined"],["skipped","Skipped",s=>s==="skipped"]];
+const FINISHED=new Set(["submitted","awarded","declined"]);
+let db=null, items=[], filter="all", expanded=new Set(), loaded=false;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money=n=>n?"$"+Number(n).toLocaleString("en-US"):"Amount varies";
+const today=()=>{const d=new Date();return new Date(d.getFullYear(),d.getMonth(),d.getDate())};
+function daysLeft(iso){if(!iso)return null;const [y,m,d]=iso.split("-").map(Number);return Math.round((new Date(y,m-1,d)-today())/864e5)}
+function fmtDate(iso){if(!iso)return "No date";const [y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}
+function safeUrl(u){try{const x=new URL(u);return /^https?:$/.test(x.protocol)?x.href:""}catch(e){return ""}}
+
+function dueChip(it){
+  if(it.status==="awarded")return '<span class="chip won">Awarded</span>';
+  if(it.status==="skipped")return '<span class="chip neutral">Skipped</span>';
+  if(FINISHED.has(it.status))return '<span class="chip neutral">'+(it.status==="declined"?"Not selected":"Submitted")+'</span>';
+  const n=daysLeft(it.deadline);
+  if(n===null)return '<span class="chip neutral">No deadline</span>';
+  if(n<0)return '<span class="chip late">Passed '+(-n)+(n===-1?" day ago":" days ago")+'</span>';
+  if(n===0)return '<span class="chip late">Due today</span>';
+  if(n<=14)return '<span class="chip soon">'+n+(n===1?" day left":" days left")+'</span>';
+  return '<span class="chip">'+n+' days left</span>';
+}
+
+function render(){
+  const counts={};STATUSES.forEach(([k])=>counts[k]=0);items.forEach(i=>counts[i.status]=(counts[i.status]||0)+1);
+  const active=items.filter(i=>i.status!=="skipped");
+  const fin=active.filter(i=>FINISHED.has(i.status)).length;
+  const pct=active.length?Math.round(fin/active.length*100):0;
+  $("pct").textContent=pct+"%";
+  $("pctText").textContent="of "+active.length+" applications finished";
+  const w=k=>active.length?(counts[k]/active.length*100):0;
+  $("bar").setAttribute("aria-valuenow",pct);
+  $("bar").innerHTML='<i class="seg-awarded" style="width:'+w("awarded")+'%"></i><i class="seg-submitted" style="width:'+w("submitted")+'%"></i><i class="seg-declined" style="width:'+w("declined")+'%"></i>';
+  $("legend").innerHTML='<span><span class="dot" style="background:var(--good)"></span><b>'+counts.awarded+'</b> awarded</span><span><span class="dot" style="background:var(--accent)"></span><b>'+counts.submitted+'</b> submitted</span><span><span class="dot" style="background:var(--muted)"></span><b>'+counts.declined+'</b> not selected</span><span><b>'+(counts.todo+counts.progress)+'</b> still open</span>';
+  const open=active.filter(i=>!FINISHED.has(i.status));
+  const soon=open.filter(i=>{const n=daysLeft(i.deadline);return n!==null&&n>=0&&n<=14});
+  const applied=active.filter(i=>i.status==="submitted"||i.status==="awarded").reduce((s,i)=>s+(Number(i.amount)||0),0);
+  const won=items.filter(i=>i.status==="awarded").reduce((s,i)=>s+(Number(i.amount)||0),0);
+  $("stats").innerHTML=
+    '<div class="stat"><span>Total tracked</span><strong>'+items.length+'</strong></div>'+
+    '<div class="stat'+(soon.length?" urgent":"")+'"><span>Due in 14 days</span><strong>'+soon.length+'</strong></div>'+
+    '<div class="stat"><span>Dollars applied for</span><strong>'+money(applied).replace("Amount varies","$0")+'</strong></div>'+
+    '<div class="stat"><span>Dollars won</span><strong>'+money(won).replace("Amount varies","$0")+'</strong></div>';
+
+  $("tabs").innerHTML=FILTERS.map(([k,l,f])=>'<button type="button" class="tab" data-filter="'+k+'" aria-pressed="'+(filter===k)+'">'+l+'<small>'+items.filter(i=>f(i.status)).length+'</small></button>').join("");
+
+  const q=$("q").value.trim().toLowerCase(), f=FILTERS.find(x=>x[0]===filter)[2], sort=$("sort").value;
+  let rows=items.filter(i=>f(i.status)&&(!q||((i.name||"")+" "+(i.org||"")).toLowerCase().includes(q)));
+  rows.sort((a,b)=>{
+    if(sort==="name")return (a.name||"").localeCompare(b.name||"");
+    if(sort==="amount")return (Number(b.amount)||0)-(Number(a.amount)||0);
+    const A=a.deadline||"9999",B=b.deadline||"9999";
+    const pa=daysLeft(a.deadline)<0&&!FINISHED.has(a.status)?1:0, pb=daysLeft(b.deadline)<0&&!FINISHED.has(b.status)?1:0;
+    return pa-pb||A.localeCompare(B);
+  });
+  if(!rows.length){
+    $("list").innerHTML='<li class="empty">'+(loaded&&!items.length?'Your list is empty. Use "Add scholarship" to enter your first one.':(items.length?'Nothing matches this filter.':'Loading your scholarships...'))+'</li>';
+    return;
+  }
+  $("list").innerHTML=rows.map(it=>{
+    const url=safeUrl(it.url), open=expanded.has(it.id), done=FINISHED.has(it.status)||it.status==="skipped";
+    return '<li class="item'+(done?" done":"")+'" data-id="'+esc(it.id)+'">'+
+    '<div class="row"><button type="button" class="check" data-act="check" role="checkbox" aria-checked="'+(FINISHED.has(it.status))+'" aria-label="Mark '+esc(it.name)+' as submitted"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg></button>'+
+    '<div><div class="title">'+esc(it.name)+'</div><div class="meta"><span>'+esc(it.org||"")+'</span><span>'+money(it.amount)+'</span><span>'+fmtDate(it.deadline)+'</span>'+
+    (it.verified?'':'<span class="chip check-date">Confirm date</span>')+(url?'<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">Open site</a>':'')+'</div></div>'+
+    '<div class="right">'+dueChip(it)+'<button type="button" class="more" data-act="toggle" aria-expanded="'+open+'">'+(open?"Close":"Details")+'</button></div></div>'+
+    (open?panel(it):'')+'</li>';
+  }).join("");
+}
+
+function panel(it){
+  return '<div class="panel">'+
+  '<label>Status<select data-f="status">'+STATUSES.map(([k,l])=>'<option value="'+k+'"'+(k===it.status?" selected":"")+'>'+l+'</option>').join("")+'</select></label>'+
+  '<label>Deadline<input type="date" data-f="deadline" value="'+esc(it.deadline||"")+'"></label>'+
+  '<label>Name<input type="text" data-f="name" value="'+esc(it.name)+'"></label>'+
+  '<label>Organization<input type="text" data-f="org" value="'+esc(it.org||"")+'"></label>'+
+  '<label>Award amount in dollars<input type="number" data-f="amount" min="0" step="1" value="'+esc(it.amount??"")+'"></label>'+
+  '<label>Application link<input type="url" data-f="url" value="'+esc(it.url||"")+'"></label>'+
+  '<label class="wide">Notes (essay topic, recommenders, login, requirements)<textarea data-f="notes">'+esc(it.notes||"")+'</textarea></label>'+
+  '<div class="wide actions"><label class="inline"><input type="checkbox" data-f="verified"'+(it.verified?" checked":"")+'> Verified on the official site</label><span style="flex:1"></span><button type="button" class="btn danger" data-act="delete">Delete</button></div></div>';
+}
+
+async function save(id,patch){
+  if(!db)return;
+  try{await db.doc("scholarships/"+id).update({...patch,updatedAt:Date.now()})}
+  catch(e){note("Could not save that change ("+(e&&e.code||"error")+"). Check your connection and try again.")}
+}
+function note(t){const n=$("loadNote");n.textContent=t;n.hidden=!t}
+
+$("list").addEventListener("click",e=>{
+  const li=e.target.closest(".item");if(!li)return;const id=li.dataset.id,it=items.find(x=>x.id===id);
+  const act=e.target.closest("[data-act]")?.dataset.act;if(!act||!it)return;
+  if(act==="check")save(id,{status:FINISHED.has(it.status)?"todo":"submitted"});
+  if(act==="toggle"){expanded.has(id)?expanded.delete(id):expanded.add(id);render()}
+  if(act==="delete"){
+    const b=e.target.closest("button");
+    if(b.dataset.arm){db.doc("scholarships/"+id).delete().catch(()=>note("Could not delete."))}
+    else{b.dataset.arm="1";b.textContent="Click again to delete";}
+  }
+});
+$("list").addEventListener("change",e=>{
+  const f=e.target.dataset.f;if(!f)return;const id=e.target.closest(".item").dataset.id;
+  let v=e.target.type==="checkbox"?e.target.checked:e.target.value;
+  if(f==="amount")v=v===""?null:Number(v);
+  if(f==="name"&&!String(v).trim())return;
+  save(id,{[f]:v});
+});
+$("tabs").addEventListener("click",e=>{const b=e.target.closest("[data-filter]");if(b){filter=b.dataset.filter;render()}});
+$("q").addEventListener("input",render);$("sort").addEventListener("change",render);
+$("toggleAdd").addEventListener("click",()=>{$("addForm").hidden=!$("addForm").hidden;if(!$("addForm").hidden)$("aName").focus()});
+$("cancelAdd").addEventListener("click",()=>{$("addForm").hidden=true;$("addForm").reset()});
+$("addForm").addEventListener("submit",async e=>{
+  e.preventDefault();if(!db){note("Storage is not available in this view.");return}
+  const amt=$("aAmount").value;
+  try{
+    await db.collection("scholarships").add({name:$("aName").value.trim(),org:$("aOrg").value.trim(),amount:amt===""?null:Number(amt),deadline:$("aDeadline").value||"",url:$("aUrl").value.trim(),status:"todo",notes:"",verified:true,updatedAt:Date.now()});
+    $("addForm").reset();$("addForm").hidden=true;
+  }catch(err){note("Could not add it ("+(err&&err.code||"error")+").")}
+});
+
+render();
+(async()=>{
+  try{db=await claude.use("db")}catch(e){db=null}
+  if(!db){loaded=true;note("This page needs to be opened signed in to claude.ai to load and save your list.");render();return}
+  const timer=setTimeout(()=>note("Still trying to reach your saved list. It may be out of date."),10000);
+  db.collection("scholarships").onSnapshot(snap=>{
+    items=snap.docs.map(d=>({id:d.id,...d.data()}));
+    if(!snap.metadata.fromCache){clearTimeout(timer);note("")}
+    loaded=true;render();
+  },err=>{clearTimeout(timer);loaded=true;note("Could not load your list ("+(err&&err.code||"error")+").");render()});
+})();
+</script>
