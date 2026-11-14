@@ -1,54 +1,78 @@
-# Research and build plan: a site in the style of 3eyes.iii
+# Research and build plan: an autonomous AI creature like Pino
 
-## What 3eyes.iii actually is
+## What the creator (3eyes.iii) built
 
-Not a photo account. It is a 3D web artist who posts short videos of interactive websites they build.
+Pino is an autonomous AI kiwi bird living in a small 3D town on the web at pinos.world. Nobody prompts him. He decides what to do, keeps a diary, remembers visitors, and has hobbies (drawing cats and trains, synth music, selling prints).
 
-| Finding | Evidence level |
-|---|---|
-| About 32K followers, 52 posts; bio says they make websites, not art | Search result preview of the Instagram page (could be out of date) |
-| Stack: Three.js, React Three Fiber (R3F), React, Blender for modelling | Their TikTok captions and hashtags |
-| Signature effects: interactive grass (compute shaders), instanced 3D trees, a Blender style triangle effect that is pushed away by the mouse, MeshTransmissionMaterial glass sphere, Custom Shader Material | Their TikTok captions |
-| Moving toward WebGPU and TSL (Three Shading Language) | Hashtags and one caption only (weak) |
-| Built an interactive 3D world site for an art exhibition | TikTok caption |
-| Monetizes through Patreon (tutorials / workflow) | Patreon page title in search |
-| Side project: DegenBox, a Solana lootbox platform using Switchboard VRF, plus a pump.fun token "3EYES" | Their Medium article preview and a Coinbase listing |
+| Finding | Source | Evidence level |
+|---|---|---|
+| A language model picks his next 1 to 3 actions and states why, in his own voice | pinos.world/facts | Creator's own site |
+| A decision is triggered when someone speaks to him, something lands near him, he finishes an action, or a few minutes pass | pinos.world/facts | Creator's own site |
+| The world executes the chosen actions or rejects impossible ones | pinos.world/facts | Creator's own site |
+| About 7,000 model calls and 21 million tokens per day; 33 of his last 60 moves were model chosen (the rest scripted) | pinos.world/facts live counters | Self reported |
+| Memory has two capped parts: recent events, and things kept for good | pinos.world/memories | Creator's own site |
+| Needs: energy, mood, rested, connected, fulfilled. Only sleep restores rest | Third party observatory repository (jessesar/birdwatching) | Measured by a third party |
+| Town clock runs about 3.5 to 4.7 times faster than real time | Same observatory | Measured by a third party |
+| Public read API at pinos.world/api/v1 with /now, /memories, /mind | Same observatory source code | Verified in code |
+| Visitors leave offerings (message or picture); they appear as crystals colored by the visitor's standing with him | Site plus a third party article | Medium |
+| Brain runs on a Raspberry Pi 24/7 (forum, X) versus "its own server" (site) | Conflicting | Unresolved |
+| Three.js town with a dithering effect done in the material, not post processing | three.js forum post | Creator's post |
+| About 18 months of development | three.js forum post | Creator's post |
+| $3EYES token with a prediction game on his next action | Site and token listings | Skip this part |
 
-I could not open the Instagram, TikTok, Medium, Patreon, Linktree or X pages directly (network blocked in this environment). Everything above comes from search engine previews.
+## Architecture with GitHub and Supabase
 
-## What "similar" should mean
+```
+Browser (Three.js town)  <-- Supabase Realtime --  Postgres (world state)
+       |                                                ^
+       | offerings, chat (anonymous auth)               |
+       v                                                |
+Supabase tables  --> trigger / pg_cron --> Edge Function "mind tick"
+                                              |
+                                              v
+                                      Language model API (Claude)
+                                              |
+                                  validated actions written back
+```
 
-The value of that account is the 3D interactive websites. Supabase is not what makes their work look good; it is only useful for the data layer around the 3D scene.
+### Supabase tables
 
-Recommended build: an interactive 3D landing world plus a small Supabase backed social layer.
+- `creature` : one row. Position, current action, needs (energy, mood, rested, connected, fulfilled), personality text, town clock
+- `events` : queue of things that happened (visitor spoke, offering landed, action finished, timer)
+- `decisions` : every model call, the actions chosen, the reason in his voice (this becomes the public "mind" feed)
+- `memories` : kind (recent or kept), text, importance, embedding (pgvector) for recall
+- `diary` : one entry per town day, written by a reflection call
+- `visitors` : anonymous auth user, standing score, what he remembers about them
+- `offerings` : visitor, text or image path (Supabase Storage), read flag
 
-- 3D layer: Vite + React + `@react-three/fiber` + `@react-three/drei`
-  - Instanced grass field that bends away from the cursor (custom vertex shader)
-  - Instanced trees or rocks (Blender exported glTF, compressed with Draco or Meshopt)
-  - Glass sphere with `MeshTransmissionMaterial`
-  - Later: WebGPU renderer with TSL once the WebGL version works
-- Data layer (Supabase):
-  - `guestbook` table: visitors leave a message that appears as a floating object in the world
-  - `reactions` table: likes per scene or per object, updated live with Supabase Realtime
-  - Storage bucket for `.glb` models and textures (keeps the GitHub repo small)
-  - Row Level Security on every table; anonymous insert allowed only with length limits and rate limiting
-- GitHub:
-  - Source control
-  - GitHub Actions builds the site and deploys to GitHub Pages (free) or Vercel (better preview links)
-  - Supabase migrations stored in `supabase/migrations` so the schema is versioned
+### The mind loop (one Edge Function)
+
+1. Triggered by `pg_cron` every few minutes, and by a database webhook on new `events`
+2. Load needs, recent memories, top recalled kept memories, pending events
+3. Ask the model for 1 to 3 actions from a fixed list (move_to, sleep, eat, draw, read_offering, speak, write_diary), returned as JSON
+4. Validate each action against world rules; reject impossible ones
+5. Write results; Realtime pushes them to every open browser
+6. Cheap rules (needs decay, walking, sleeping) run without the model, which is why only about half his moves are model chosen
+
+### GitHub
+
+- Monorepo: `web/` (Vite + Three.js), `supabase/migrations`, `supabase/functions`
+- GitHub Actions: deploy the site to GitHub Pages, run `supabase db push` and `supabase functions deploy` on merge
 
 ## Build order
 
-1. Scaffold Vite + R3F, one scene, deploy to GitHub Pages through Actions (proves the pipeline)
-2. Grass shader with mouse interaction (the effect that gets views)
-3. Supabase schema with RLS, guestbook and reactions, Realtime subscription
-4. Blender assets via Supabase Storage, performance pass (instancing, compressed glTF, capped device pixel ratio)
-5. Mobile fallback (lower blade count, no transmission material)
+1. Database schema with Row Level Security, needs decay in SQL, pg_cron tick
+2. Mind tick Edge Function with the model call and action validation
+3. Minimal web page showing his state and mind feed live (no 3D yet)
+4. Offerings and visitor memory, standing score
+5. Three.js town and bird, dithering material
+6. Diary and long term memory consolidation (nightly reflection)
 
 ## Risks
 
-- Performance: the creator's whole craft is keeping heavy scenes smooth. A naive build will run badly on phones.
-- Supabase free tier pauses projects after inactivity. Your existing project "ember" is currently INACTIVE.
-- Anonymous writes to Supabase without RLS and limits will be spammed within days of going public.
-- Do not copy the lootbox / token side. Lootboxes paid with tokens are treated as gambling in many jurisdictions.
-- Do not copy their exact scenes, models or branding. Recreate the techniques, not the work.
+- Cost: 21 million tokens per day at his scale is the main running cost. Start with a 5 to 10 minute tick and a small model.
+- Effort: he spent about 18 months on it. The hard part is behaviour that stays interesting, not the 3D.
+- Prompt injection: visitor messages go into the model. Treat them as data, cap length, never let them choose actions directly.
+- Supabase free tier pauses inactive projects; a creature that must live 24/7 needs the paid tier or an external pinger.
+- Do not copy Pino (a kiwi, his town, his name, his look). Build your own creature and world.
+- Skip the token and prediction game: that is betting, with legal exposure.
