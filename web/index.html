@@ -66,7 +66,7 @@
     <h1>River Run</h1>
     <p>Ride the current downstream. Thread the buoy gates, dodge the rocks, keep your hull in one piece.</p>
     <div class="keys"><b>W</b><b>A</b><b>S</b><b>D</b></div>
-    <p>W throttle, S brake and reverse, A and D steer.</p>
+    <p>W throttle, S brake and reverse, A and D steer. T switches between standard and toon water.</p>
     <button class="go" id="go">Press any movement key to launch</button>
   </div>
 </div>
@@ -271,29 +271,63 @@ void main(){
   o = vec4(h, s.r, 0.0, 1.0);
 }`;
 
-/* ---------------- water + banks + trees (one full screen pass) ---------------- */
-const waterFS = `#version 300 es
+/* ---------------- procedural textures for the water shader ----------------
+   The Godot shader samples four textures that were not in the upload (wave,
+   wave normal, foam, caustics). These are generated once on the GPU instead,
+   as seamless 512 pixel tiles with mipmaps, so textureLod blur works the same. */
+const TEX_N = 512, MAX_ROCKS = 24;
+const genFS = `#version 300 es
 precision highp float;
-in vec2 vNdc; out vec4 o;
-uniform vec2 uCam, uHalf;
-uniform float uTime, uWorld, uSimN, uHasSim;
-uniform sampler2D uSim;
-${RIVER_GLSL}
+in vec2 vUv; out vec4 o;
+uniform int uMode; uniform float uSeed, uBase; uniform int uOct; uniform sampler2D uSrc;
 ${NOISE_GLSL}
-const vec2 L2 = vec2(-0.55, 0.83);   // direction toward the sun in the ground plane
-
-float flowPattern(vec2 p, vec2 u, float time){
-  float T = 3.5;
-  float ph0 = fract(time/T), ph1 = fract(time/T + 0.5);
-  float w0 = 1.0 - abs(2.0*ph0 - 1.0);
-  vec2 t = normalize(u + vec2(1e-4)); vec2 n = vec2(-t.y, t.x);
-  vec2 p0 = p - u*ph0*T, p1 = p - u*ph1*T;                 // two phase flow map, so it never smears
-  float a = fbm(vec2(dot(p0,t)*0.30, dot(p0,n)*1.45) + 3.1);
-  float b = fbm(vec2(dot(p1,t)*0.30, dot(p1,n)*1.45) + 11.7);
-  return mix(b, a, w0);
+vec2 grad(vec2 i, float P){ float a = hash21(mod(i, P) + uSeed*17.0)*6.2831853; return vec2(cos(a), sin(a)); }
+float pnoise(vec2 p, float P){
+  vec2 i = floor(p), f = fract(p); vec2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+  float a = dot(grad(i,P), f), b = dot(grad(i+vec2(1,0),P), f-vec2(1,0));
+  float c = dot(grad(i+vec2(0,1),P), f-vec2(0,1)), d = dot(grad(i+vec2(1,1),P), f-vec2(1,1));
+  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
 }
-float simH(vec2 p){ return texture(uSim, p/uWorld).r; }
+float pfbm(vec2 uv, float base){ float v=0.0, a=0.5, P=base; vec2 p=uv*base;
+  for (int k=0;k<5;k++){ v += a*pnoise(p,P); p *= 2.0; P *= 2.0; a *= 0.5; } return v; }
+float pfbmN(vec2 uv, float base, int oct){ float v=0.0, a=0.5, P=base; vec2 p=uv*base;
+  for (int k=0;k<6;k++){ if (k >= oct) break; v += a*pnoise(p,P); p *= 2.0; P *= 2.0; a *= 0.5; } return v; }
+vec2 worley(vec2 uv, float N){
+  vec2 p = uv*N, i = floor(p), f = fract(p); float F1 = 8.0, F2 = 8.0;
+  for (int y=-1;y<=1;y++) for (int x=-1;x<=1;x++){
+    vec2 g = vec2(float(x), float(y));
+    vec2 jit = hash22(mod(i+g, N) + uSeed*31.0);
+    float d = length(g + jit - f);
+    if (d < F1){ F2 = F1; F1 = d; } else if (d < F2) F2 = d;
+  }
+  return vec2(F1, F2);
+}
+void main(){
+  vec2 uv = vUv;
+  if (uMode == 0){                       // wave height: mostly low with sparse crests, the range the Godot foam thresholds expect
+    float w = clamp(0.5 + pfbm(uv, 4.0)*1.15, 0.0, 1.0);
+    o = vec4(vec3(pow(w, 3.0)), 1.0);
+  } else if (uMode == 1){                // foam shape: cellular bubbles with fine breakup
+    vec2 F = worley(uv, 10.0);
+    float v = clamp(F.x*1.25, 0.0, 1.0)*0.75 + clamp(0.5 + pfbm(uv, 16.0), 0.0, 1.0)*0.25;
+    o = vec4(vec3(v), 1.0);
+  } else if (uMode == 2){                // caustics: bright web along cell borders
+    vec2 F = worley(uv, 6.0);
+    float c = 1.0 - smoothstep(0.0, 0.16, F.y - F.x);
+    o = vec4(vec3(c*c), 1.0);
+  } else if (uMode == 4){                // seamless fractal noise stretched to the full 0 to 1 range (Godot normalize = true)
+    o = vec4(vec3(clamp(0.5 + pfbmN(uv, uBase, uOct)*1.55, 0.0, 1.0)), 1.0);
+  } else {                               // normal map derived from the wave height texture
+    ivec2 px = ivec2(gl_FragCoord.xy); int n = ${TEX_N};
+    float hl = texelFetch(uSrc, ivec2((px.x+n-1)%n, px.y), 0).r, hr = texelFetch(uSrc, ivec2((px.x+1)%n, px.y), 0).r;
+    float hd = texelFetch(uSrc, ivec2(px.x, (px.y+n-1)%n), 0).r, hu = texelFetch(uSrc, ivec2(px.x, (px.y+1)%n), 0).r;
+    vec3 nn = normalize(vec3(-(hr-hl)*30.0, -(hu-hd)*30.0, 1.0));
+    o = vec4(nn*0.5 + 0.5, 1.0);
+  }
+}`;
 
+// Tree canopies and their shadows, shared by the ground, grass and canopy passes.
+const TREES_GLSL = `const vec2 L2T = vec2(-0.55, 0.83);
 vec4 treeLayer(vec2 p, out float shadow){
   float cs = 2.8; vec2 g = floor(p/cs);
   vec4 res = vec4(0.0); shadow = 0.0;
@@ -310,7 +344,7 @@ vec4 treeLayer(vec2 p, out float shadow){
     float lump = 1.0 + 0.1*sin(atan(off.y, off.x)*6.0 + h.x*30.0);
     float cov = 1.0 - smoothstep(rad*lump - 0.07, rad*lump + 0.05, dd);
     if (cov > 0.0){
-      float lit = clamp(0.55 + 0.5*dot(off/rad, L2), 0.0, 1.0);
+      float lit = clamp(0.55 + 0.5*dot(off/rad, L2T), 0.0, 1.0);
       float leaf = vnoise(p*6.5 + h*20.0);
       vec3 dark = mix(vec3(0.07,0.22,0.10), vec3(0.10,0.26,0.10), h3);
       vec3 light = mix(vec3(0.30,0.55,0.20), vec3(0.42,0.62,0.22), h3);
@@ -320,64 +354,311 @@ vec4 treeLayer(vec2 p, out float shadow){
   }
   return res;
 }
+`;
+
+/* ---------------- water + banks + trees (one full screen pass) ----------------
+   Water is a port of the supplied Godot shaders (water.gdshader and
+   water_toon.gdshader): two layer distorted wave sampling, depth tinted color,
+   refraction of the river bed, caustics, edge and wave foam shaped by a foam
+   texture, then either physically based or stepped toon lighting.
+   Changes for a top down river:
+     - Godot reads depth from the depth buffer; here depth comes from the
+       distance to the banks and to each nearby rock.
+     - Godot refracts the screen texture; here the river bed is shaded
+       procedurally at the refracted position.
+     - Godot scrolls waves at a fixed velocity; here every layer is carried by
+       the river current with a two phase flow map.
+     - Vertex displacement is skipped: a camera looking straight down cannot see it.
+     - The live wave simulation (boat wake, rocks) adds into the wave height and normal. */
+const waterFS = `#version 300 es
+precision highp float;
+in vec2 vNdc; out vec4 o;
+uniform vec2 uCam, uHalf;
+uniform float uTime, uWorld, uSimN, uHasSim, uToon;
+uniform sampler2D uSim, uWave, uWaveN, uFoam, uCaus;
+uniform vec3 uRocks[${MAX_ROCKS}];
+uniform int uRockCount;
+${RIVER_GLSL}
+${NOISE_GLSL}
+const vec2 L2 = vec2(-0.55, 0.83);   // direction toward the sun in the ground plane
+uniform sampler2D uGroundNoise;
+
+// BinbunGrass palette_01.tres: gradient offsets 1/6, 1/2, 5/6
+const vec3 PAL0 = vec3(0.658824, 0.792157, 0.345098), PAL1 = vec3(0.458824, 0.654902, 0.262745), PAL2 = vec3(0.274510, 0.509804, 0.196078);
+vec3 palette(float t){
+  if (t <= 0.166667) return PAL0;
+  if (t <= 0.5) return mix(PAL0, PAL1, (t - 0.166667)/0.333333);
+  if (t <= 0.833333) return mix(PAL1, PAL2, (t - 0.5)/0.333333);
+  return PAL2;
+}
+
+// Godot uniform defaults, same names. Values changed for the river are marked.
+const vec3  SURFACE_COLOR = vec3(0.2, 1.0, 0.8), DEPTH_COLOR = vec3(0.08, 0.2, 0.4), FOAM_COLOR = vec3(1.0);
+const float DEPTH_SIZE = 4.0;                  // Godot 12 m; this river is about 3.6 m deep
+const float SURFACE_ROUGHNESS = 0.05, FOAM_ROUGHNESS = 0.05;
+const float CAUSTICS_STRENGTH = 2.0; const vec2 CAUSTICS_SCALE = vec2(0.5);
+const float WAVE_SOFTNESS = 3.0; const vec2 WAVE_SCALE = vec2(0.2), WAVE_LAYER_SCALE = vec2(1.5);
+const float WAVE_HIGHLIGHT = 0.5; const vec2 WAVE_VELOCITY = vec2(0.02);
+const float EDGE_FOAM_DEPTH_SIZE = 1.0, WAVE_FOAM_AMOUNT = 0.8, FOAM_START = 0.15, FOAM_END = 0.3, FOAM_EXPONENT = 2.0;
+const float REFRACTION_AMOUNT = 0.5, REFRACTION_EXPONENT = 0.5;
+const float DIFFUSE_STEPS = 12.0, DIFFUSE_SMOOTHNESS = 0.2, SPECULAR_STEPS = 12.0, SPECULAR_SMOOTHNESS = 0.2;
+const float PI = 3.14159265;
+
+vec3 toLinear(vec3 c){ return pow(c, vec3(2.2)); }
+vec3 toSrgb(vec3 c){ return pow(clamp(c, 0.0, 1.0), vec3(1.0/2.2)); }
+
+// Water depth in meters (negative on land): stands in for Godot's depth buffer read.
+float waterDepth(vec2 p){
+  float d = bankD(p);
+  float D = d < 0.0 ? d : 3.6*pow(min(d/3.5, 1.0), 0.6);   // steep banks, deep channel
+  for (int i=0;i<${MAX_ROCKS};i++){
+    if (i >= uRockCount) break;
+    D = min(D, (length(p - uRocks[i].xy) - uRocks[i].z)*1.1);
+  }
+  return D;
+}
+
+// Godot sample_wave(): a second layer distorted by the first. The current carries both.
+vec4 sampleWave(sampler2D tex, vec2 p, vec2 disp, vec2 jit){
+  vec2 uv1 = (p - disp*1.15)*WAVE_SCALE*WAVE_LAYER_SCALE - uTime*WAVE_VELOCITY + jit*1.7;
+  float w1 = textureLod(tex, uv1, WAVE_SOFTNESS).r;
+  vec2 uv2 = (p - disp)*WAVE_SCALE + uTime*WAVE_VELOCITY + jit;
+  return textureLod(tex, uv2 - w1*0.1, WAVE_SOFTNESS);
+}
+vec3 sampleCaustics(vec2 uv){
+  uv *= CAUSTICS_SCALE;
+  return vec3(texture(uCaus, uv).r, texture(uCaus, uv + vec2(0.02,0.02)).r, texture(uCaus, uv + vec2(0.03,0.01)).r);
+}
+
+// What lies under the water (Godot refracts the screen texture for this).
+vec3 bedColor(vec2 q){
+  float n = vnoise(q*1.3), n2 = vnoise(q*5.5);
+  vec3 c = mix(vec3(0.50,0.45,0.34), vec3(0.68,0.62,0.46), n);
+  vec2 cell = floor(q*1.8); vec2 h = hash22(cell);
+  vec2 ctr = (cell + 0.25 + 0.5*h)/1.8;
+  float pr = 0.06 + 0.1*hash21(cell + 4.1);
+  float peb = 1.0 - smoothstep(pr - 0.03, pr + 0.02, length(q - ctr));
+  c = mix(c, mix(vec3(0.38,0.36,0.33), vec3(0.58,0.52,0.42), h.y), peb*step(0.35, h.x));
+  for (int i=0;i<${MAX_ROCKS};i++){
+    if (i >= uRockCount) break;
+    float rd = length(q - uRocks[i].xy) - uRocks[i].z;
+    c = mix(c, vec3(0.30,0.30,0.28), (1.0 - smoothstep(0.0, 0.7, rd))*0.7);
+  }
+  return toLinear(c*(0.85 + 0.25*n2));
+}
+
+${TREES_GLSL}
+float stepped(float v, float steps, float smoothness){
+  float m = v*steps, b = floor(m);
+  return (b + smoothstep(0.5 - smoothness*0.5, 0.5 + smoothness*0.5, m - b))/steps;
+}
 
 void main(){
   vec2 p = uCam + vNdc*uHalf;
   float d = bankD(p);
-  vec2 u = flowAt(p);
-  float spd = length(u);
-  float s = p.x - cxf(p.y), hwv = hwf(p.y);
+  vec3 col;
 
-  /* ---- water ---- */
-  float eps = 0.07;
-  float f  = flowPattern(p, u, uTime);
-  float fx = flowPattern(p+vec2(eps,0.0), u, uTime);
-  float fy = flowPattern(p+vec2(0.0,eps), u, uTime);
-  vec2 patG = vec2(fx-f, fy-f)/eps;
-  vec2 simG = vec2(0.0); float hs = 0.0;
-  if (uHasSim > 0.5){
-    float dx = uWorld/uSimN;
-    hs = simH(p);
-    simG = vec2(simH(p+vec2(dx,0.0)) - simH(p-vec2(dx,0.0)), simH(p+vec2(0.0,dx)) - simH(p-vec2(0.0,dx)))/(2.0*dx);
+  if (d > -0.3){
+    vec2 u = flowAt(p);
+    /* ---- flow map phases: textures ride the current without smearing ---- */
+    float T = 2.4;
+    float ph0 = fract(uTime/T), ph1 = fract(uTime/T + 0.5);
+    float w0 = 1.0 - abs(2.0*ph0 - 1.0), w1 = 1.0 - w0;
+    float vn = inversesqrt(w0*w0 + w1*w1);            // keeps contrast steady through the cross fade
+    vec2 d0 = u*(ph0*T), d1 = u*(ph1*T);
+    vec2 j1 = vec2(0.37, 0.61);
+
+    /* ---- waves ---- */
+    float wave = 0.5 + ((sampleWave(uWave, p, d0, vec2(0.0)).r*w0 + sampleWave(uWave, p, d1, j1).r*w1) - 0.5)*vn;
+    vec3 nA = sampleWave(uWaveN, p, d0, vec2(0.0)).rgb*2.0 - 1.0;
+    vec3 nB = sampleWave(uWaveN, p, d1, j1).rgb*2.0 - 1.0;
+    vec3 nmap = normalize(nA*w0 + nB*w1);
+    vec2 simG = vec2(0.0); float hs = 0.0;
+    if (uHasSim > 0.5){
+      float dx = uWorld/uSimN;
+      hs = texture(uSim, p/uWorld).r;
+      simG = vec2(texture(uSim, (p+vec2(dx,0.0))/uWorld).r - texture(uSim, (p-vec2(dx,0.0))/uWorld).r,
+                  texture(uSim, (p+vec2(0.0,dx))/uWorld).r - texture(uSim, (p-vec2(0.0,dx))/uWorld).r)/(2.0*dx);
+    }
+    wave = smoothstep(0.0, 1.0, clamp(wave + hs*1.4, 0.0, 1.0));
+
+    /* ---- refraction (Godot offsets screen UV; here world meters) ---- */
+    vec2 bp = p + vec2((pow(wave, REFRACTION_EXPONENT)*2.0 - 0.5)*0.01*REFRACTION_AMOUNT) * (2.0*uHalf.y) - simG*0.35;
+    float Dr = waterDepth(bp);
+    float preDepth = pow(clamp((DEPTH_SIZE - Dr)/DEPTH_SIZE, 0.0, 1.0), 4.0);
+    bp = mix(bp, p, preDepth);
+    if (Dr < 0.0) bp = p;
+    float D = waterDepth(bp);
+    float depth = pow(clamp((DEPTH_SIZE - D)/DEPTH_SIZE, 0.0, 1.0), 4.0);   // 1 in the shallows, 0 when deep
+
+    /* ---- caustics on the bed ---- */
+    vec2 suv = bp*0.2;
+    float c1a = texture(uCaus, (suv - d0*0.2)*CAUSTICS_SCALE).r;
+    float c1b = texture(uCaus, (suv - d1*0.2 + j1)*CAUSTICS_SCALE).r;
+    vec3 c2a = sampleCaustics(suv + c1a*0.05 - d0*0.2*0.8);
+    vec3 c2b = sampleCaustics(suv + c1b*0.05 - d1*0.2*0.8 + j1);
+    vec3 caustics = (c2a*w0 + c2b*w1) * (1.0 - depth);
+
+    /* ---- foam ---- */
+    float edgeFoam = clamp((EDGE_FOAM_DEPTH_SIZE - D)/EDGE_FOAM_DEPTH_SIZE, 0.0, 1.0);
+    float foam = max(edgeFoam, wave*WAVE_FOAM_AMOUNT);
+    float fA = texture(uFoam, (p - d0)*0.5).r, fB = texture(uFoam, (p - d1)*0.5 + j1).r;
+    float foamShape = 1.0 - clamp(0.5 + ((fA*w0 + fB*w1) - 0.5)*vn, 0.0, 1.0);
+    foam = clamp((foam - FOAM_START)/(FOAM_END - FOAM_START), 0.0, 1.0);
+    foam = clamp((foam - foamShape)/(1.0 - foamShape + 1e-4), 0.0, 1.0);
+    foam = pow(foam, FOAM_EXPONENT);
+
+    /* ---- albedo, exactly as Godot combines it (in linear color) ---- */
+    vec3 surf = toLinear(SURFACE_COLOR), deepC = toLinear(DEPTH_COLOR), foamC = toLinear(FOAM_COLOR);
+    vec3 flatColor = mix(deepC, surf, depth);
+    vec3 color = bedColor(bp) + pow(caustics*CAUSTICS_STRENGTH, vec3(2.0));
+    color = mix(flatColor, color, 0.4*depth);
+    color = mix(color, surf, wave*WAVE_HIGHLIGHT);
+    color = mix(color, foamC, foam);
+
+    /* ---- lighting ---- */
+    vec3 N = normalize(vec3(nmap.xy - simG*1.2, nmap.z));
+    vec3 L = normalize(vec3(L2*0.45, 0.89)), V = vec3(0.0, 0.0, 1.0), H = normalize(L + V);
+    float rough = mix(SURFACE_ROUGHNESS, FOAM_ROUGHNESS, foam);
+    float ndl = dot(N, L), ndh = clamp(dot(N, H), 0.0, 1.0);
+    vec3 lit;
+    if (uToon > 0.5){
+      // water_toon.gdshader light(): stepped diffuse and specular
+      float l = stepped(ndl, DIFFUSE_STEPS, DIFFUSE_SMOOTHNESS);
+      float r = mix(0.01, 0.99, rough);
+      float sp = clamp(pow(ndh, 16.0/r), 0.1, 0.99);
+      sp = mix(pow(sp, 2.0 - r), 0.0, pow(r, 0.1));
+      sp = stepped(sp, SPECULAR_STEPS, SPECULAR_SMOOTHNESS);
+      lit = color*(0.22 + (1.0 + color/PI)*l) + (PI + color)*sp*0.5;
+    } else {
+      // water.gdshader uses Godot's standard lighting: Lambert plus GGX specular
+      float a = max(rough*rough, 0.0025), a2 = a*a;
+      float dd = ndh*ndh*(a2 - 1.0) + 1.0;
+      float D_ggx = a2/(PI*dd*dd);
+      float F = 0.04 + 0.96*pow(1.0 - clamp(dot(H, V), 0.0, 1.0), 5.0);
+      float spec = min(D_ggx*F*0.25*max(ndl, 0.0), 6.0);
+      lit = color*(0.22 + 0.85*max(ndl, 0.0)) + vec3(1.0, 0.97, 0.9)*spec + toLinear(vec3(0.55,0.75,0.95))*0.04;
+    }
+    col = toSrgb(lit);
   }
-  vec3 nrm = normalize(vec3(-(simG*4.5 + patG*0.10), 1.0));
-  vec3 Lv = normalize(vec3(L2*0.55, 0.75)); vec3 Hv = normalize(Lv + vec3(0.0,0.0,1.0));
-
-  float deepT = smoothstep(0.0, 3.6, d);
-  vec3 shallow = vec3(0.20,0.60,0.58), deep = vec3(0.025,0.20,0.34);
-  vec3 water = mix(shallow, deep, deepT*0.92);
-  water = mix(vec3(0.58,0.74,0.58), water, smoothstep(0.0, 1.1, d));          // sandy bed in the shallows
-  float streak = smoothstep(0.55, 0.85, f) * (0.12 + 0.12*spd);
-  water += vec3(0.55,0.8,0.85)*streak;
-  water *= 0.86 + 0.30*clamp(dot(nrm, Lv), 0.0, 1.0);
-  float spec = pow(max(dot(nrm, Hv), 0.0), 110.0);
-  water += vec3(1.0,0.97,0.88)*spec*0.85;
-  float fres = pow(1.0 - nrm.z, 1.5);
-  water += vec3(0.30,0.50,0.60)*fres*1.4;
-
-  float shoreN = fbm(p*vec2(1.3) + vec2(0.0, -uTime*0.35));
-  float shoreFoam = (1.0 - smoothstep(0.0, 0.75, d + (shoreN-0.5)*0.9)) * 0.75;
-  float rippleFoam = smoothstep(0.16, 0.5, abs(hs)) * 0.5;
-  float foam = clamp(shoreFoam + rippleFoam, 0.0, 1.0);
-  water = mix(water, vec3(0.95,0.99,1.0), foam);
 
   /* ---- land ---- */
-  float bd = -d;
-  float n1 = fbm(p*0.45), n2 = vnoise(p*3.0);
-  vec3 sand = mix(vec3(0.74,0.66,0.46), vec3(0.83,0.76,0.56), n2);
-  sand = mix(sand*0.68, sand, smoothstep(0.0, 0.7, bd));
-  vec3 grass = mix(vec3(0.27,0.45,0.17), vec3(0.37,0.56,0.22), n1) * (0.9 + 0.2*n2);
-  float gm = smoothstep(1.0, 2.3, bd + (n1-0.5)*1.7);
-  vec3 land = mix(sand, grass, gm);
-  float shadow; vec4 tree = treeLayer(p, shadow);
-  land *= 1.0 - shadow;
-  land = mix(land, tree.rgb, tree.a);
-
-  float landMask = smoothstep(0.06, -0.06, d);
-  vec3 col = mix(water, land, landMask);
+  if (d < 0.3){
+    float bd = -d;
+    float n1 = fbm(p*0.45), n2 = vnoise(p*3.0);
+    vec3 sand = mix(vec3(0.74,0.66,0.46), vec3(0.83,0.76,0.56), n2);
+    sand = mix(sand*0.68, sand, smoothstep(0.0, 0.7, bd));
+    vec3 grass = palette(texture(uGroundNoise, p*0.1).r);            // ground.gdshader
+    float gm = smoothstep(1.0, 2.3, bd + (n1-0.5)*1.7);
+    vec3 land = mix(sand, grass, gm);
+    float shadow = 0.0; treeLayer(p, shadow);
+    land *= 1.0 - shadow;
+    float landMask = smoothstep(0.06, -0.06, d);
+    col = d <= -0.3 ? land : mix(col, land, landMask);
+  }
   col *= 1.0 - 0.28*dot(vNdc, vNdc)*0.5;                                        // soft vignette
   o = vec4(col, 1.0);
 }`;
+
+
+/* ---------------- grass: port of BinbunGrass grass.gdshader ----------------
+   Instanced clumps standing on the land, drawn back to front. Same atlas, same
+   world space color noise and palette as the ground, same dithered alpha cut.
+   Changes for a top down 2D view:
+     - Godot scatters 10,000 MultiMesh instances; here each instance is a grid
+       cell around the camera with a hashed position, so grass is endless.
+     - Billboards face the camera; here they stand up the screen.
+     - Wind is off in the supplied material (velocity 0, 0); a light breeze is on here.
+     - Clumps under tree shadow are darkened like the ground beneath them.  */
+const GRASS_CELL = 0.25;
+const grassVS = `#version 300 es
+precision highp float;
+uniform vec2 uCam, uHalf, uWindVel;
+uniform ivec2 uOrigin; uniform int uCols;
+uniform float uCell, uTime, uRandomVariation;
+uniform sampler2D uGroundNoise, uWind;
+out vec2 vUv; out vec2 vColorPos; out float vShade; flat out int vId;
+${RIVER_GLSL}
+${NOISE_GLSL}
+${TREES_GLSL}
+void main(){
+  int col = gl_InstanceID % uCols, row = gl_InstanceID / uCols;
+  ivec2 cell = ivec2(uOrigin.x + col, uOrigin.y - row);     // rows run north to south: painter's order
+  vec2 c = vec2(cell);
+  vec2 h = hash22(c*1.37 + 11.0);
+  vec2 base = (c + h)*uCell;
+  float d = bankD(base);
+  float n1 = fbm(base*0.45);
+  float gm = smoothstep(1.0, 2.3, -d + (n1-0.5)*1.7);
+  float scale = 0.3 + 1.7*hash21(c + 5.3);                  // Godot buffer scales span about 0 to 2
+  if (gm < 0.5 + 0.4*hash21(c + 9.1)) scale = 0.0;           // only on grass, thinning out toward the sand
+  float size = 0.4*scale;
+
+  int v = gl_VertexID;                                      // two triangles
+  vec2 corner = v==0 ? vec2(0,0) : v==1 ? vec2(1,0) : v==2 ? vec2(1,1) : v==3 ? vec2(0,0) : v==4 ? vec2(1,1) : vec2(0,1);
+  vUv = vec2(corner.x, 1.0 - corner.y);                     // Godot quad UV: v = 0 at the top
+  vec2 world = base + vec2((corner.x - 0.5)*size, corner.y*size*0.9);
+
+  // wind(): noise scrolled by wind velocity, bending the top of the clump
+  float wn = texture(uWind, world*0.03 - vec2(uTime*0.01)*uWindVel).r;
+  world += wn*uWindVel*0.25*pow(1.0 - vUv.y, 2.0)*scale;
+
+  vColorPos = vec2(base.x + (corner.x - 0.5)*size, base.y); // the clump's own ground position, as Godot sees world_pos.xz
+  float shadow = 0.0; treeLayer(base, shadow);
+  vShade = 1.0 - shadow;
+  int id = int(hash21(c + 2.2)*1024.0);
+  vId = id;
+  if (hash21(vec2(float(id), 1.0)) < uRandomVariation) vShade = -vShade;   // flag for the random lighter clump
+  gl_Position = scale > 0.0 ? vec4((world - uCam)/uHalf, 0.0, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+}`;
+const grassFS = `#version 300 es
+precision highp float;
+in vec2 vUv; in vec2 vColorPos; in float vShade; flat in int vId; out vec4 o;
+uniform sampler2D uAtlas, uGroundNoise;
+uniform float uCutStart, uCutEnd;
+const vec3 PAL0 = vec3(0.658824, 0.792157, 0.345098), PAL1 = vec3(0.458824, 0.654902, 0.262745), PAL2 = vec3(0.274510, 0.509804, 0.196078);
+vec3 palette(float t){
+  if (t <= 0.166667) return PAL0;
+  if (t <= 0.5) return mix(PAL0, PAL1, (t - 0.166667)/0.333333);
+  if (t <= 0.833333) return mix(PAL1, PAL2, (t - 0.5)/0.333333);
+  return PAL2;
+}
+float bayer4(vec2 frag){
+  int x = int(mod(frag.x, 4.0)), y = int(mod(frag.y, 4.0));
+  int m[16] = int[](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
+  return float(m[x + y*4])/16.0;
+}
+vec2 atlasUv(vec2 uv, int index, int size){
+  int i = index % (size*size);
+  vec2 tile = 1.0/vec2(float(size));
+  return uv*tile + vec2(float(i % size), float(i / size))*tile;
+}
+void main(){
+  float shape = texture(uAtlas, atlasUv(vUv, vId, 2)).r;
+  float noiseValue = texture(uGroundNoise, vColorPos*0.1).r;
+  if (vShade < 0.0) noiseValue += 0.4;
+  vec3 color = palette(noiseValue)*abs(vShade);
+  // alpha_mode Dithered with alpha_cut 0.4 to 0.6, as in grass_01.tres
+  float alpha = clamp((shape - uCutStart)/(uCutEnd - uCutStart), 0.0, 1.0);
+  alpha = step(bayer4(gl_FragCoord.xy) + 0.01, alpha);
+  if (alpha < 0.1) discard;
+  o = vec4(color, 1.0);
+}`;
+const canopyFS = `#version 300 es
+precision highp float;
+in vec2 vNdc; out vec4 o;
+uniform vec2 uCam, uHalf;
+${RIVER_GLSL}
+${NOISE_GLSL}
+${TREES_GLSL}
+void main(){
+  vec2 p = uCam + vNdc*uHalf;
+  if (bankD(p) > -1.5) discard;
+  float shadow; vec4 tree = treeLayer(p, shadow);
+  if (tree.a <= 0.0) discard;
+  o = vec4(tree.rgb*(1.0 - 0.28*dot(vNdc, vNdc)*0.5), tree.a);
+}`;
+const GRASS_ATLAS_PNG = 'data:image/png;base64,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'; // grass_basic_atlas.png, 128 px grayscale copy
 
 /* ---------------- sprites: boat, rocks, buoys, foam ---------------- */
 const SPR_VS = `#version 300 es
@@ -428,7 +709,7 @@ void main(){
       tail = exp(-pow(across/wdt, 2.0)) * exp(-along/(rr*2.6+0.6)) * smoothstep(rr*0.6, rr*1.3, along);
       tail *= 0.35 + 0.65*vnoise(vec2(across*2.2, along*0.9 - uTime*2.0));
     }
-    float a = clamp((ring*(0.55+0.7*n) + tail*0.85), 0.0, 1.0) * vQ.w;
+    float a = clamp((ring*0.25*(0.55+0.7*n) + tail*0.7), 0.0, 1.0) * vQ.w;   // edge foam comes from the water shader now
     res = vec4(0.96, 0.99, 1.0, a*0.85);
 
   } else if (type == 2){                                    // rock
@@ -515,6 +796,9 @@ void main(){
 const simProg   = makeProgram(FULLSCREEN_VS, simFS);
 const waterProg = makeProgram(FULLSCREEN_VS, waterFS);
 const sprProg   = makeProgram(SPR_VS, SPR_FS);
+const genProg   = makeProgram(FULLSCREEN_VS, genFS);
+const grassProg = makeProgram(grassVS, grassFS);
+const canopyProg = makeProgram(FULLSCREEN_VS, canopyFS);
 
 const emptyVao = gl.createVertexArray();
 
@@ -539,6 +823,58 @@ if (canRenderFloat){
 const dummyTex = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, dummyTex);
 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+
+// generated water textures (see genFS)
+function makeWaterTexture(mode, seed, src, base, oct){
+  const levels = Math.log2(TEX_N) + 1;
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texStorage2D(gl.TEXTURE_2D, levels, gl.RGBA8, TEX_N, TEX_N);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+  gl.viewport(0, 0, TEX_N, TEX_N);
+  gl.useProgram(genProg); gl.bindVertexArray(emptyVao);
+  gl.uniform1i(genProg.u.uMode, mode); gl.uniform1f(genProg.u.uSeed, seed);
+  if (genProg.u.uBase) gl.uniform1f(genProg.u.uBase, base || 4); if (genProg.u.uOct) gl.uniform1i(genProg.u.uOct, oct || 5);
+  // Never leave the target bound for sampling: that is a feedback loop and WebGL drops the draw.
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src || dummyTex);
+  if (genProg.u.uSrc) gl.uniform1i(genProg.u.uSrc, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(fb);
+  gl.bindTexture(gl.TEXTURE_2D, t); gl.generateMipmap(gl.TEXTURE_2D);
+  return t;
+}
+const waveTex     = makeWaterTexture(0, 1.0);
+const waveNormTex = makeWaterTexture(3, 0.0, waveTex);
+const foamTex     = makeWaterTexture(1, 2.0);
+const causTex     = makeWaterTexture(2, 3.0);
+// BinbunGrass noise resources: ground color noise (FastNoiseLite seed 6, about 4 features per tile, 5 octaves)
+// and wind noise (simplex, 3 octaves, about 10 features per tile).
+const groundNoiseTex = makeWaterTexture(4, 6.0, null, 4, 5);
+const windNoiseTex   = makeWaterTexture(4, 9.0, null, 10, 3);
+const grassAtlas = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, grassAtlas);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+let grassReady = false;
+{
+  const img = new Image();
+  img.onload = () => {
+    gl.bindTexture(gl.TEXTURE_2D, grassAtlas);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    grassReady = true;
+  };
+  img.src = GRASS_ATLAS_PNG;
+}
+const WIND_VELOCITY = [0.9, 0.35];   // the supplied material has (0, 0): no wind
+let toonWater = false;
+try { toonWater = new URLSearchParams(location.search).get('water') === 'toon' || localStorage.getItem('riverrun.water') === 'toon'; } catch(e) {}
 
 // sprite batch
 const MAX_SPRITES = 700, FLOATS = 12;
@@ -853,7 +1189,42 @@ function drawScene(){
   gl.uniform1f(w.uHasSim, simOK ? 1 : 0);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, simOK ? sim.tex[sim.r] : dummyTex);
   gl.uniform1i(w.uSim, 0);
+  [[waveTex,'uWave'],[waveNormTex,'uWaveN'],[foamTex,'uFoam'],[causTex,'uCaus']].forEach(([t,name], i) => {
+    gl.activeTexture(gl.TEXTURE1 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(w[name], 1 + i);
+  });
+  gl.uniform1f(w.uToon, toonWater ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, groundNoiseTex); gl.uniform1i(w.uGroundNoise, 5);
+  const rockArr = new Float32Array(MAX_ROCKS*3); let rc = 0;
+  for (const o of obstaclesNear(camY, halfY + 6)){
+    if (rc >= MAX_ROCKS) break;
+    if (Math.abs(o.x - camX) > halfX + 6) continue;
+    if (!o.rock) continue;                                    // buoys float, they do not change depth
+    rockArr[rc*3] = o.x; rockArr[rc*3+1] = o.y; rockArr[rc*3+2] = o.r*0.92; rc++;
+  }
+  gl.uniform3fv(w.uRocks, rockArr); gl.uniform1i(w.uRockCount, rc);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // grass clumps, then tree canopies over them
+  if (grassReady){
+    const g = grassProg.u;
+    const cols = Math.ceil(2*halfX/GRASS_CELL) + 6, rows = Math.ceil(2*halfY/GRASS_CELL) + 10;
+    const ox = Math.floor((camX - halfX)/GRASS_CELL) - 3, oy = Math.floor((camY + halfY)/GRASS_CELL) + 2;
+    gl.useProgram(grassProg); gl.bindVertexArray(emptyVao);
+    gl.uniform2f(g.uCam, camX, camY); gl.uniform2f(g.uHalf, halfX, halfY);
+    gl.uniform2f(g.uWindVel, WIND_VELOCITY[0], WIND_VELOCITY[1]);
+    gl.uniform2i(g.uOrigin, ox, oy); gl.uniform1i(g.uCols, cols);
+    gl.uniform1f(g.uCell, GRASS_CELL); gl.uniform1f(g.uTime, time); gl.uniform1f(g.uRandomVariation, 0.0);
+    gl.uniform1f(g.uCutStart, 0.4); gl.uniform1f(g.uCutEnd, 0.6);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, grassAtlas); gl.uniform1i(g.uAtlas, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, groundNoiseTex); gl.uniform1i(g.uGroundNoise, 1);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, windNoiseTex); gl.uniform1i(g.uWind, 2);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cols*rows);
+  }
+  gl.useProgram(canopyProg); gl.bindVertexArray(emptyVao);
+  gl.uniform2f(canopyProg.u.uCam, camX, camY); gl.uniform2f(canopyProg.u.uHalf, halfX, halfY);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.BLEND);
 
   // sprites, back to front
   sprCount = 0;
@@ -920,6 +1291,7 @@ addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT'){ if (e.code === 'Enter') submitScore(); return; }   // typing a name
   const k = keymap[e.code];
   if (k){ input[k] = true; e.preventDefault(); if (state === 'ready') startGame(); }
+  else if (e.code === 'KeyT'){ toonWater = !toonWater; toast(toonWater ? 'Toon water' : 'Standard water'); try { localStorage.setItem('riverrun.water', toonWater ? 'toon' : 'standard'); } catch(err) {} }
   else if (e.code === 'KeyR' || (state === 'over' && (e.code === 'Space' || e.code === 'Enter'))){ resetGame(); startGame(); }
 });
 addEventListener('keyup', e => { const k = keymap[e.code]; if (k) input[k] = false; });
@@ -957,7 +1329,7 @@ requestAnimationFrame(frame);
 
 // Handle for automated checks.
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; }, get score(){ return score; },
-  startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, cx, hw, baseFlow, get particles(){ return particles.length; } };
+  startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, cx, hw, baseFlow, get particles(){ return particles.length; }, setToon(v){ toonWater = v; } };
 })();
 </script>
 </body>
