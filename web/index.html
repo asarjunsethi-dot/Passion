@@ -33,6 +33,15 @@
     border:1px solid var(--edge);font-size:18px}
   .keys b:nth-child(1){grid-column:2}
   .go{display:inline-block;margin-top:12px;padding:10px 22px;border-radius:999px;background:var(--accent);color:#2a2100;font-weight:800;cursor:pointer;border:0;font-size:16px}
+  .go.small{margin:0;padding:8px 14px;font-size:14px}
+  .go:disabled{opacity:.5;cursor:default}
+  #lb{margin-top:10px;text-align:left}
+  #lb .row{display:flex;gap:8px;justify-content:center}
+  #nick{flex:1;min-width:0;border-radius:999px;border:1px solid var(--edge);background:rgba(255,255,255,.1);color:var(--ink);padding:8px 14px;font-size:14px;-webkit-user-select:text;user-select:text}
+  #board{margin:12px 0 0;padding-left:26px;color:var(--ink);font-variant-numeric:tabular-nums}
+  #board li{padding:2px 0}
+  #board li span{float:right;color:var(--accent);font-weight:700}
+  #board .dim{list-style:none;margin-left:-26px;color:var(--ink2)}
   .hide{display:none!important}
   #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
   #touch{position:fixed;left:0;right:0;bottom:18px;display:none;justify-content:space-between;padding:0 18px;pointer-events:none}
@@ -66,6 +75,10 @@
   <div class="card">
     <h1>Wrecked</h1>
     <p id="overText"></p>
+    <div id="lb">
+      <div class="row"><input id="nick" maxlength="16" placeholder="Your name" autocomplete="off"><button class="go small" id="submit">Submit score</button></div>
+      <ol id="board"><li class="dim">Loading leaderboard...</li></ol>
+    </div>
     <button class="go" id="again">Sail again (R)</button>
   </div>
 </div>
@@ -675,6 +688,42 @@ function wreck(){
   document.getElementById('overText').textContent =
     `Score ${total}  (${Math.floor(score.maxY)} m, ${score.gates} gates). ` + (newBest ? 'New personal best!' : `Best ${best}.`);
   document.getElementById('over').classList.remove('hide');
+  runSubmitted = false; el('submit').disabled = total <= 0; el('submit').textContent = 'Submit score';
+  loadBoard();
+}
+
+/* ---------- shared leaderboard (Supabase, public anon key, protected by row level security) ---------- */
+const SB_URL = 'https://yghxquvblqkqyzqjfvbx.supabase.co';
+const SB_KEY = 'sb_publishable_JiT0wQvhjG1IV9e-CYQVng_SQNHEt2_';
+const sbHeaders = { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY, 'Content-Type': 'application/json' };
+let runSubmitted = false;
+async function loadBoard(){
+  const ol = el('board');
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/scores?select=player,score&order=score.desc,created_at.asc&limit=10', { headers: sbHeaders });
+    if (!r.ok) throw new Error(r.status);
+    const rows = await r.json();
+    ol.textContent = '';
+    if (!rows.length){ const li = document.createElement('li'); li.className = 'dim'; li.textContent = 'No scores yet. Be the first.'; ol.appendChild(li); return; }
+    for (const row of rows){
+      const li = document.createElement('li'); li.textContent = row.player + ' ';
+      const sp = document.createElement('span'); sp.textContent = row.score; li.appendChild(sp); ol.appendChild(li);
+    }
+  } catch(e){ ol.textContent = ''; const li = document.createElement('li'); li.className = 'dim'; li.textContent = 'Leaderboard unavailable right now.'; ol.appendChild(li); }
+}
+async function submitScore(){
+  if (runSubmitted) return;
+  const name = el('nick').value.trim().slice(0, 16);
+  if (!name){ el('nick').focus(); return; }
+  runSubmitted = true; el('submit').disabled = true; el('submit').textContent = 'Sending...';
+  try { localStorage.setItem('riverrun.name', name); } catch(e) {}
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/scores', { method:'POST', headers: { ...sbHeaders, Prefer:'return=minimal' },
+      body: JSON.stringify({ player: name, score: scoreTotal(), distance: Math.floor(Math.max(0, score.maxY)), gates: score.gates }) });
+    if (!r.ok) throw new Error(r.status);
+    el('submit').textContent = 'Submitted';
+  } catch(e){ runSubmitted = false; el('submit').disabled = false; el('submit').textContent = 'Retry'; }
+  loadBoard();
 }
 const scoreTotal = () => score.gates*50 + Math.floor(Math.max(0, score.maxY));
 
@@ -868,6 +917,7 @@ function toast(msg, bad){
 /* ---------- input ---------- */
 const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right' };
 addEventListener('keydown', e => {
+  if (e.target && e.target.tagName === 'INPUT'){ if (e.code === 'Enter') submitScore(); return; }   // typing a name
   const k = keymap[e.code];
   if (k){ input[k] = true; e.preventDefault(); if (state === 'ready') startGame(); }
   else if (e.code === 'KeyR' || (state === 'over' && (e.code === 'Space' || e.code === 'Enter'))){ resetGame(); startGame(); }
@@ -875,6 +925,8 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { const k = keymap[e.code]; if (k) input[k] = false; });
 addEventListener('blur', () => { for (const k in input) input[k] = false; });
 el('go').addEventListener('click', startGame);
+el('submit').addEventListener('click', submitScore);
+try { el('nick').value = localStorage.getItem('riverrun.name') || ''; } catch(e) {}
 el('again').addEventListener('click', () => { resetGame(); startGame(); });
 document.querySelectorAll('#touch button').forEach(b => {
   const k = b.dataset.k;
