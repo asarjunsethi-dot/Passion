@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>River Run</title>
+<meta name="description" content="A top down WebGL river boat game with a live water wave simulation. Steer with W A S D.">
+<style>
+  :root{
+    --ink:#f4fbfb; --ink2:#bcd7da; --panel:rgba(8,32,40,.72); --edge:rgba(160,220,225,.25);
+    --accent:#ffd36b; --bad:#ff6b5b; --good:#7be0a4;
+  }
+  html,body{margin:0;height:100%;background:#0a2a33;overflow:hidden;color:var(--ink);
+    font:15px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-user-select:none;user-select:none}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+  #hud{position:fixed;left:16px;top:16px;display:flex;gap:10px;flex-wrap:wrap;pointer-events:none;max-width:calc(100vw - 32px)}
+  .chip{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:8px 12px;backdrop-filter:blur(6px);min-width:84px}
+  .chip .k{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+  .chip .v{display:block;font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+  .bar{margin-top:6px;height:8px;width:120px;border-radius:6px;background:rgba(255,255,255,.14);overflow:hidden}
+  .bar i{display:block;height:100%;width:100%;background:var(--good);transition:width .15s,background .15s}
+  #toast{position:fixed;left:50%;top:22%;transform:translate(-50%,0);font-size:28px;font-weight:800;color:var(--accent);
+    text-shadow:0 2px 12px rgba(0,0,0,.5);opacity:0;transition:opacity .25s,transform .6s;pointer-events:none;text-align:center}
+  #toast.on{opacity:1;transform:translate(-50%,-14px)}
+  #toast.bad{color:var(--bad)}
+  .panel{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .card{pointer-events:auto;background:var(--panel);border:1px solid var(--edge);border-radius:18px;padding:26px 30px;max-width:420px;
+    margin:16px;text-align:center;backdrop-filter:blur(8px);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+  .card h1{margin:0 0 6px;font-size:34px;letter-spacing:.02em}
+  .card p{margin:8px 0;color:var(--ink2)}
+  .keys{display:grid;grid-template-columns:repeat(3,44px);gap:6px;justify-content:center;margin:16px 0 8px}
+  .keys b{display:flex;align-items:center;justify-content:center;height:44px;border-radius:10px;background:rgba(255,255,255,.1);
+    border:1px solid var(--edge);font-size:18px}
+  .keys b:nth-child(1){grid-column:2}
+  .go{display:inline-block;margin-top:12px;padding:10px 22px;border-radius:999px;background:var(--accent);color:#2a2100;font-weight:800;cursor:pointer;border:0;font-size:16px}
+  .hide{display:none!important}
+  #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
+  #touch{position:fixed;left:0;right:0;bottom:18px;display:none;justify-content:space-between;padding:0 18px;pointer-events:none}
+  #touch div{pointer-events:auto;display:grid;grid-template-columns:repeat(2,64px);gap:10px}
+  #touch button{height:64px;border-radius:16px;border:1px solid var(--edge);background:var(--panel);color:var(--ink);font-size:22px}
+  @media (pointer:coarse){#touch{display:flex}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <div class="chip"><span class="k">Distance</span><span class="v" id="dist">0 m</span></div>
+  <div class="chip"><span class="k">Gates</span><span class="v" id="gates">0</span></div>
+  <div class="chip"><span class="k">Speed</span><span class="v" id="spd">0 km/h</span></div>
+  <div class="chip"><span class="k">Hull</span><div class="bar"><i id="hp"></i></div></div>
+</div>
+<div id="toast"></div>
+
+<div id="start" class="panel">
+  <div class="card">
+    <h1>River Run</h1>
+    <p>Ride the current downstream. Thread the buoy gates, dodge the rocks, keep your hull in one piece.</p>
+    <div class="keys"><b>W</b><b>A</b><b>S</b><b>D</b></div>
+    <p>W throttle, S brake and reverse, A and D steer.</p>
+    <button class="go" id="go">Press any movement key to launch</button>
+  </div>
+</div>
+
+<div id="over" class="panel hide">
+  <div class="card">
+    <h1>Wrecked</h1>
+    <p id="overText"></p>
+    <button class="go" id="again">Sail again (R)</button>
+  </div>
+</div>
+
+<div id="touch">
+  <div><button data-k="left">&#8630;</button><button data-k="right">&#8631;</button></div>
+  <div><button data-k="down">&#9660;</button><button data-k="up">&#9650;</button></div>
+</div>
+
+<div id="nogl"><div><h1>WebGL 2 is not available</h1><p>This game needs a browser with WebGL 2 support.</p></div></div>
+
+<script>
+(() => {
+'use strict';
+
+/* ======================================================================
+   River definition. One set of constants drives the physics (JavaScript)
+   and the shaders (GLSL), so what you see is exactly what you collide with.
+   ====================================================================== */
+const R = { a1:9, k1:0.045, a2:4, k2:0.11, p2:1.7, a3:1.2, k3:0.23, p3:0.4,
+            w0:7.5, w1:1.8, kw1:0.031, pw1:0.9, w2:0.8, kw2:0.09 };
+const cx  = y => R.a1*Math.sin(y*R.k1) + R.a2*Math.sin(y*R.k2+R.p2) + R.a3*Math.sin(y*R.k3+R.p3);
+const dcx = y => R.a1*R.k1*Math.cos(y*R.k1) + R.a2*R.k2*Math.cos(y*R.k2+R.p2) + R.a3*R.k3*Math.cos(y*R.k3+R.p3);
+const hw  = y => R.w0 + R.w1*Math.sin(y*R.kw1+R.pw1) + R.w2*Math.sin(y*R.kw2);
+
+function baseFlow(x, y){
+  const s = x - cx(y), h = hw(y);
+  const q = Math.min(1, Math.abs(s)/h);
+  const speed = 2.0*Math.pow(7.5/h, 0.7) * (0.3 + 0.7*(1-q*q));  // fast mid channel, slow near banks
+  const m = dcx(y), inv = 1/Math.sqrt(1+m*m);
+  return [m*inv*speed, inv*speed];
+}
+function bankDist(x, y){            // positive inside the river, negative on land
+  const m = dcx(y);
+  return (hw(y) - Math.abs(x - cx(y)))/Math.sqrt(1+m*m);
+}
+function bankNormal(x, y){          // points from land into the river
+  const e = 0.05;
+  const gx = bankDist(x+e,y) - bankDist(x-e,y), gy = bankDist(x,y+e) - bankDist(x,y-e);
+  const l = Math.hypot(gx, gy) || 1;
+  return [gx/l, gy/l];
+}
+
+const f5 = n => n.toFixed(5);
+const RIVER_GLSL = `
+const float A1=${f5(R.a1)},K1=${f5(R.k1)},A2=${f5(R.a2)},K2=${f5(R.k2)},P2=${f5(R.p2)},A3=${f5(R.a3)},K3=${f5(R.k3)},P3=${f5(R.p3)};
+const float W0=${f5(R.w0)},W1=${f5(R.w1)},KW1=${f5(R.kw1)},PW1=${f5(R.pw1)},W2=${f5(R.w2)},KW2=${f5(R.kw2)};
+float cxf(float y){ return A1*sin(y*K1)+A2*sin(y*K2+P2)+A3*sin(y*K3+P3); }
+float dcxf(float y){ return A1*K1*cos(y*K1)+A2*K2*cos(y*K2+P2)+A3*K3*cos(y*K3+P3); }
+float hwf(float y){ return W0+W1*sin(y*KW1+PW1)+W2*sin(y*KW2); }
+float bankD(vec2 p){ float m=dcxf(p.y); return (hwf(p.y)-abs(p.x-cxf(p.y)))/sqrt(1.0+m*m); }
+vec2 flowAt(vec2 p){
+  float s=p.x-cxf(p.y), h=hwf(p.y); float q=min(1.0,abs(s)/h);
+  float sp=2.0*pow(7.5/h,0.7)*(0.3+0.7*(1.0-q*q));
+  float m=dcxf(p.y); float inv=inversesqrt(1.0+m*m);
+  return vec2(m*inv,inv)*sp;
+}`;
+
+/* ======================================================================
+   Procedural obstacles: rocks and buoy gates, generated per river cell.
+   ====================================================================== */
+const CELL = 12;
+function rng(seed){
+  let s = seed|0;
+  return () => { s = (s + 0x6D2B79F5)|0; let t = Math.imul(s ^ (s>>>15), 1|s);
+    t = (t + Math.imul(t ^ (t>>>7), 61|t)) ^ t; return ((t ^ (t>>>14))>>>0)/4294967296; };
+}
+const cells = new Map();
+const gateState = new Map();          // cell index -> 0 pending, 1 passed, 2 missed
+function cellData(k){
+  let c = cells.get(k);
+  if (c) return c;
+  const r = rng(k*7919 + 1337);
+  c = { k, obs: [], gate: null };
+  if (k >= 1 && k % 4 === 1){
+    const gy = k*CELL + CELL/2, h = hw(gy);
+    const gap = Math.min(3.3, h - 1.5), mid = cx(gy);
+    c.gate = { k, y: gy, mid, gap };
+    c.obs.push({ x: mid-gap, y: gy, r: 0.42, buoy: 0 }, { x: mid+gap, y: gy, r: 0.42, buoy: 1 });
+  }
+  if (k >= 2){
+    const diff = Math.min(1, k/70);
+    const n = Math.floor(r()*(1.4 + diff*2.2));
+    for (let i=0;i<n;i++){
+      const y = k*CELL + r()*CELL, rad = 0.5 + r()*(0.55 + diff*0.5), h = hw(y);
+      const lat = (r()*2-1)*Math.max(0, h - rad - 1.0);
+      if (c.gate && Math.abs(y - c.gate.y) < 4) continue;
+      c.obs.push({ x: cx(y)+lat, y, r: rad, rock: true, seed: r() });
+    }
+  }
+  cells.set(k, c);
+  return c;
+}
+function obstaclesNear(y, range){
+  const out = [];
+  for (let k = Math.floor((y-range)/CELL); k <= Math.floor((y+range)/CELL); k++){
+    const c = cellData(k); for (const o of c.obs) out.push(o);
+  }
+  return out;
+}
+function gatesNear(y, range){
+  const out = [];
+  for (let k = Math.floor((y-range)/CELL); k <= Math.floor((y+range)/CELL); k++){
+    const c = cellData(k); if (c.gate) out.push(c.gate);
+  }
+  return out;
+}
+
+/* ======================================================================
+   WebGL setup
+   ====================================================================== */
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, powerPreference:'high-performance' });
+if (!gl){ document.getElementById('nogl').style.display = 'flex'; throw new Error('WebGL2 unavailable'); }
+const canRenderFloat = !!(gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float'));
+
+function compile(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    const log = gl.getShaderInfoLog(s);
+    console.error(log + '\n' + src.split('\n').map((l,i)=>(i+1)+': '+l).join('\n'));
+    throw new Error('Shader compile failed: ' + log);
+  }
+  return s;
+}
+function makeProgram(vsSrc, fsSrc){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('Link failed: ' + gl.getProgramInfoLog(p));
+  p.u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i=0;i<n;i++){ const info = gl.getActiveUniform(p, i); const name = info.name.replace(/\[0\]$/, ''); p.u[name] = gl.getUniformLocation(p, info.name); }
+  return p;
+}
+
+const FULLSCREEN_VS = `#version 300 es
+precision highp float;
+out vec2 vUv; out vec2 vNdc;
+void main(){
+  vec2 pos = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2));
+  vUv = pos; vNdc = pos*2.0-1.0;
+  gl_Position = vec4(vNdc, 0.0, 1.0);
+}`;
+
+const NOISE_GLSL = `
+float hash21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
+vec2 hash22(vec2 p){ vec3 p3=fract(vec3(p.xyx)*vec3(.1031,.1030,.0973)); p3+=dot(p3,p3.yzx+33.33); return fract((p3.xx+p3.yz)*p3.zy); }
+float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=hash21(i), b=hash21(i+vec2(1,0)), c=hash21(i+vec2(0,1)), d=hash21(i+vec2(1,1));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
+float fbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<3;i++){ v+=a*vnoise(p); p=p*2.03+vec2(17.1,9.7); a*=0.5; } return v; }
+`;
+
+/* ---------------- wave simulation (GPU, toroidal height field) ----------------
+   The height field wraps around a WORLD sized window that follows the boat.
+   Each step: advect by the river current, run the 2D wave equation, damp near
+   the banks, and inject impulses from the hull, the propeller and the rocks.  */
+const SIM_N = 512, SIM_WORLD = 96, SIM_DT = 1/60, SIM_C2 = 0.10, MAX_SRC = 16;
+const simFS = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform sampler2D uState;
+uniform float uN, uWorld, uDt, uC2;
+uniform vec2 uCam;
+uniform vec4 uSrc[${MAX_SRC}];
+uniform int uCount;
+${RIVER_GLSL}
+void main(){
+  vec2 w0 = vUv*uWorld;
+  vec2 p = w0 + uWorld*floor((uCam - w0)/uWorld + 0.5);   // copy of this texel nearest the camera
+  vec2 u = flowAt(p);
+  float d = bankD(p);
+  vec2 uvA = vUv - u*uDt/uWorld;                           // semi Lagrangian advection
+  float tx = 1.0/uN;
+  vec2 s = texture(uState, uvA).rg;
+  float lap = texture(uState, uvA+vec2(tx,0)).r + texture(uState, uvA-vec2(tx,0)).r
+            + texture(uState, uvA+vec2(0,tx)).r + texture(uState, uvA-vec2(0,tx)).r - 4.0*s.r;
+  float h = s.r + (s.r - s.g)*0.988 + uC2*lap;
+  h *= 0.9992;
+  for (int i=0;i<${MAX_SRC};i++){
+    if (i>=uCount) break;
+    vec2 dl = p - uSrc[i].xy;
+    h += uSrc[i].w * exp(-dot(dl,dl)/(uSrc[i].z*uSrc[i].z));
+  }
+  h *= mix(0.86, 1.0, smoothstep(0.0, 1.4, d));            // absorb energy at the shore
+  h *= smoothstep(-0.15, 0.2, d);                          // no water on land
+  h = clamp(h, -1.5, 1.5);
+  o = vec4(h, s.r, 0.0, 1.0);
+}`;
+
+/* ---------------- water + banks + trees (one full screen pass) ---------------- */
+const waterFS = `#version 300 es
+precision highp float;
+in vec2 vNdc; out vec4 o;
+uniform vec2 uCam, uHalf;
+uniform float uTime, uWorld, uSimN, uHasSim;
+uniform sampler2D uSim;
+${RIVER_GLSL}
+${NOISE_GLSL}
+const vec2 L2 = vec2(-0.55, 0.83);   // direction toward the sun in the ground plane
+
+float flowPattern(vec2 p, vec2 u, float time){
+  float T = 3.5;
+  float ph0 = fract(time/T), ph1 = fract(time/T + 0.5);
+  float w0 = 1.0 - abs(2.0*ph0 - 1.0);
+  vec2 t = normalize(u + vec2(1e-4)); vec2 n = vec2(-t.y, t.x);
+  vec2 p0 = p - u*ph0*T, p1 = p - u*ph1*T;                 // two phase flow map, so it never smears
+  float a = fbm(vec2(dot(p0,t)*0.30, dot(p0,n)*1.45) + 3.1);
+  float b = fbm(vec2(dot(p1,t)*0.30, dot(p1,n)*1.45) + 11.7);
+  return mix(b, a, w0);
+}
+float simH(vec2 p){ return texture(uSim, p/uWorld).r; }
+
+vec4 treeLayer(vec2 p, out float shadow){
+  float cs = 2.8; vec2 g = floor(p/cs);
+  vec4 res = vec4(0.0); shadow = 0.0;
+  for (int j=-1;j<=1;j++) for (int i=-1;i<=1;i++){
+    vec2 cell = g + vec2(float(i), float(j));
+    if (hash21(cell+3.3) < 0.32) continue;
+    vec2 h = hash22(cell); float h3 = hash21(cell+7.7);
+    vec2 ctr = (cell + 0.15 + 0.7*h)*cs;
+    float rad = cs*(0.26 + 0.2*h3);
+    if (-bankD(ctr) < 2.2 + rad) continue;
+    float sd = length(p - (ctr + vec2(0.55,-0.7))) - rad;
+    shadow = max(shadow, (1.0 - smoothstep(-0.25, 0.7, sd))*0.5);
+    vec2 off = p - ctr; float dd = length(off);
+    float lump = 1.0 + 0.1*sin(atan(off.y, off.x)*6.0 + h.x*30.0);
+    float cov = 1.0 - smoothstep(rad*lump - 0.07, rad*lump + 0.05, dd);
+    if (cov > 0.0){
+      float lit = clamp(0.55 + 0.5*dot(off/rad, L2), 0.0, 1.0);
+      float leaf = vnoise(p*6.5 + h*20.0);
+      vec3 dark = mix(vec3(0.07,0.22,0.10), vec3(0.10,0.26,0.10), h3);
+      vec3 light = mix(vec3(0.30,0.55,0.20), vec3(0.42,0.62,0.22), h3);
+      vec3 c = mix(dark, light, lit*(0.7+0.5*leaf));
+      res = vec4(c, cov);
+    }
+  }
+  return res;
+}
+
+void main(){
+  vec2 p = uCam + vNdc*uHalf;
+  float d = bankD(p);
+  vec2 u = flowAt(p);
+  float spd = length(u);
+  float s = p.x - cxf(p.y), hwv = hwf(p.y);
+
+  /* ---- water ---- */
+  float eps = 0.07;
+  float f  = flowPattern(p, u, uTime);
+  float fx = flowPattern(p+vec2(eps,0.0), u, uTime);
+  float fy = flowPattern(p+vec2(0.0,eps), u, uTime);
+  vec2 patG = vec2(fx-f, fy-f)/eps;
+  vec2 simG = vec2(0.0); float hs = 0.0;
+  if (uHasSim > 0.5){
+    float dx = uWorld/uSimN;
+    hs = simH(p);
+    simG = vec2(simH(p+vec2(dx,0.0)) - simH(p-vec2(dx,0.0)), simH(p+vec2(0.0,dx)) - simH(p-vec2(0.0,dx)))/(2.0*dx);
+  }
+  vec3 nrm = normalize(vec3(-(simG*4.5 + patG*0.10), 1.0));
+  vec3 Lv = normalize(vec3(L2*0.55, 0.75)); vec3 Hv = normalize(Lv + vec3(0.0,0.0,1.0));
+
+  float deepT = smoothstep(0.0, 3.6, d);
+  vec3 shallow = vec3(0.20,0.60,0.58), deep = vec3(0.025,0.20,0.34);
+  vec3 water = mix(shallow, deep, deepT*0.92);
+  water = mix(vec3(0.58,0.74,0.58), water, smoothstep(0.0, 1.1, d));          // sandy bed in the shallows
+  float streak = smoothstep(0.55, 0.85, f) * (0.12 + 0.12*spd);
+  water += vec3(0.55,0.8,0.85)*streak;
+  water *= 0.86 + 0.30*clamp(dot(nrm, Lv), 0.0, 1.0);
+  float spec = pow(max(dot(nrm, Hv), 0.0), 110.0);
+  water += vec3(1.0,0.97,0.88)*spec*0.85;
+  float fres = pow(1.0 - nrm.z, 1.5);
+  water += vec3(0.30,0.50,0.60)*fres*1.4;
+
+  float shoreN = fbm(p*vec2(1.3) + vec2(0.0, -uTime*0.35));
+  float shoreFoam = (1.0 - smoothstep(0.0, 0.75, d + (shoreN-0.5)*0.9)) * 0.75;
+  float rippleFoam = smoothstep(0.16, 0.5, abs(hs)) * 0.5;
+  float foam = clamp(shoreFoam + rippleFoam, 0.0, 1.0);
+  water = mix(water, vec3(0.95,0.99,1.0), foam);
+
+  /* ---- land ---- */
+  float bd = -d;
+  float n1 = fbm(p*0.45), n2 = vnoise(p*3.0);
+  vec3 sand = mix(vec3(0.74,0.66,0.46), vec3(0.83,0.76,0.56), n2);
+  sand = mix(sand*0.68, sand, smoothstep(0.0, 0.7, bd));
+  vec3 grass = mix(vec3(0.27,0.45,0.17), vec3(0.37,0.56,0.22), n1) * (0.9 + 0.2*n2);
+  float gm = smoothstep(1.0, 2.3, bd + (n1-0.5)*1.7);
+  vec3 land = mix(sand, grass, gm);
+  float shadow; vec4 tree = treeLayer(p, shadow);
+  land *= 1.0 - shadow;
+  land = mix(land, tree.rgb, tree.a);
+
+  float landMask = smoothstep(0.06, -0.06, d);
+  vec3 col = mix(water, land, landMask);
+  col *= 1.0 - 0.28*dot(vNdc, vNdc)*0.5;                                        // soft vignette
+  o = vec4(col, 1.0);
+}`;
+
+/* ---------------- sprites: boat, rocks, buoys, foam ---------------- */
+const SPR_VS = `#version 300 es
+precision highp float;
+in vec2 aWorld; in vec2 aLocal; in vec4 aP; in vec4 aQ;
+uniform vec2 uCam, uHalf;
+out vec2 vLocal; out vec4 vP; out vec4 vQ;
+void main(){ vLocal=aLocal; vP=aP; vQ=aQ; gl_Position=vec4((aWorld-uCam)/uHalf, 0.0, 1.0); }`;
+
+const SPR_FS = `#version 300 es
+precision highp float;
+in vec2 vLocal; in vec4 vP; in vec4 vQ; out vec4 o;
+uniform float uTime;
+${NOISE_GLSL}
+const vec2 LW = vec2(-0.55, 0.83);
+
+float sdBox(vec2 p, vec2 b){ vec2 d=abs(p)-b; return length(max(d,0.0))+min(max(d.x,d.y),0.0); }
+float hullW(float y){
+  float t = clamp((y+1.25)/2.6, 0.0, 1.0);
+  float tt = pow(t, 0.72);
+  float e = abs(2.0*tt-1.0);
+  return 0.62*pow(max(1.0-pow(e,2.2), 0.0), 0.62);
+}
+vec2 rot(vec2 v, float a){ float c=cos(a), s=sin(a); return vec2(c*v.x - s*v.y, s*v.x + c*v.y); }
+
+void main(){
+  int type = int(vP.y + 0.5);
+  float th = vP.x, seed = vP.z;
+  vec2 q = vLocal;
+  float aa = max((fwidth(q.x)+fwidth(q.y))*0.6, 1e-4);
+  vec2 Ll = rot(LW, -th);                                   // light direction in sprite space
+  vec4 res = vec4(0.0);
+
+  if (type == 0){                                           // soft round shadow
+    float r = length(q)/vQ.x;
+    res = vec4(0.0, 0.03, 0.06, (1.0 - smoothstep(0.35, 1.0, r))*vQ.w);
+
+  } else if (type == 1){                                    // foam ring and downstream tail around a rock
+    float rr = vQ.x;
+    float r = length(q);
+    float n = vnoise(q*3.2 + vec2(0.0, -uTime*0.8)) * 0.6 + vnoise(q*7.0 - uTime*0.5)*0.4;
+    float ring = exp(-pow((r - rr*1.10)/(0.16 + 0.08*rr), 2.0));
+    vec2 fd = normalize(vQ.yz + vec2(1e-4));
+    float along = dot(q, fd), across = dot(q, vec2(-fd.y, fd.x));
+    float tail = 0.0;
+    if (along > 0.0){
+      float wdt = rr*0.75 + 0.18*along;
+      tail = exp(-pow(across/wdt, 2.0)) * exp(-along/(rr*2.6+0.6)) * smoothstep(rr*0.6, rr*1.3, along);
+      tail *= 0.35 + 0.65*vnoise(vec2(across*2.2, along*0.9 - uTime*2.0));
+    }
+    float a = clamp((ring*(0.55+0.7*n) + tail*0.85), 0.0, 1.0) * vQ.w;
+    res = vec4(0.96, 0.99, 1.0, a*0.85);
+
+  } else if (type == 2){                                    // rock
+    float rr = vQ.x;
+    float ang = atan(q.y, q.x);
+    float edgeR = rr*(1.0 + 0.09*sin(3.0*ang + seed*10.0) + 0.06*sin(5.0*ang + seed*20.0) + 0.04*sin(9.0*ang + seed*30.0));
+    float dist = length(q) - edgeR;
+    float m = 1.0 - smoothstep(-aa, aa, dist);
+    vec2 nn = q/edgeR;
+    float hgt = sqrt(max(1.0 - dot(nn,nn), 0.0));
+    vec3 N = normalize(vec3(nn*0.9, hgt + 0.15));
+    float diff = clamp(dot(N, normalize(vec3(Ll*0.8, 0.7))), 0.0, 1.0);
+    float sp = vnoise(q*9.0 + seed*40.0);
+    vec3 base = mix(vec3(0.36,0.35,0.34), vec3(0.55,0.54,0.51), sp);
+    float moss = smoothstep(0.55, 0.9, vnoise(q*2.5 + seed*13.0));
+    base = mix(base, vec3(0.30,0.42,0.22), moss*0.45);
+    vec3 c = base*(0.45 + 0.85*diff);
+    c = mix(c*0.55, c, smoothstep(0.0, 0.35, hgt));         // dark rim where the rock meets the water
+    res = vec4(c, m);
+
+  } else if (type == 3){                                    // buoy
+    float bob = 1.0 + 0.05*sin(uTime*2.3 + seed*6.28);
+    float R0 = 0.42*bob;
+    float r = length(q);
+    float m = 1.0 - smoothstep(R0-aa, R0+aa, r);
+    float ang = atan(q.y, q.x);
+    int id = int(vQ.x + 0.5);
+    vec3 main = id==0 ? vec3(0.92,0.22,0.20) : id==1 ? vec3(0.18,0.72,0.34) : id==2 ? vec3(1.0,0.82,0.30) : vec3(0.55,0.58,0.6);
+    float stripe = step(0.0, sin(ang*4.0 + 0.8));
+    vec3 ringC = mix(main, vec3(0.97,0.97,0.95), stripe);
+    float inner = 1.0 - smoothstep(R0*0.46-aa, R0*0.46+aa, r);
+    vec2 nn = q/R0; float hgt = sqrt(max(1.0 - dot(nn,nn), 0.0));
+    vec3 N = normalize(vec3(nn*0.8, hgt+0.2));
+    float diff = clamp(dot(N, normalize(vec3(Ll*0.7, 0.7))), 0.0, 1.0);
+    vec3 c = mix(ringC, main*0.8, inner);
+    c *= 0.55 + 0.7*diff;
+    c += vec3(1.0)*pow(max(dot(N, normalize(vec3(Ll*0.5, 1.0))),0.0), 30.0)*0.35;
+    res = vec4(c, m);
+
+  } else if (type == 4 || type == 5){                       // boat (4) and its shadow (5)
+    float edge = hullW(q.y) - abs(q.x);
+    if (type == 5){
+      res = vec4(0.0, 0.03, 0.05, 0.30*smoothstep(-0.22, 0.14, edge));
+    } else {
+      float steer = vQ.x, flash = vQ.z;
+      float body = smoothstep(-aa, aa, edge);
+      float inside = smoothstep(0.10-aa, 0.10+aa, edge);
+      vec3 rim = mix(vec3(0.80,0.15,0.13), vec3(0.95,0.93,0.88), smoothstep(0.015, 0.05, edge));
+      float plank = 0.5 + 0.5*sin(q.x*52.0);
+      vec3 wood = mix(vec3(0.62,0.42,0.25), vec3(0.74,0.52,0.32), plank*0.65);
+      wood *= 0.78 + 0.3*smoothstep(0.10, 0.42, edge);
+      vec3 c = mix(rim, wood, inside);
+      // thwart seats
+      float s1 = 1.0 - smoothstep(-aa, aa, sdBox(q - vec2(0.0,-0.12), vec2(0.60, 0.09)));
+      float s2 = 1.0 - smoothstep(-aa, aa, sdBox(q - vec2(0.0, 0.72), vec2(0.50, 0.07)));
+      c = mix(c, vec3(0.45,0.30,0.18), max(s1,s2)*inside);
+      // sailor: shoulders and a hat
+      float sh = 1.0 - smoothstep(-aa, aa, length((q - vec2(0.0,-0.10))/vec2(0.32,0.15)) - 1.0);
+      c = mix(c, vec3(0.95,0.52,0.12), sh*inside);
+      float hd = 1.0 - smoothstep(-aa, aa, length(q - vec2(0.0,-0.02)) - 0.16);
+      c = mix(c, vec3(0.20,0.28,0.45), hd);
+      float hl = 1.0 - smoothstep(-aa, aa, length(q - vec2(-0.04,0.01)) - 0.05);
+      c = mix(c, vec3(0.55,0.65,0.85), hl*hd);
+      float alpha = body;
+      // outboard motor, angled with the rudder
+      vec2 mp = rot(q - vec2(0.0,-1.18), steer*0.55);
+      float mot = 1.0 - smoothstep(-aa, aa, sdBox(mp - vec2(0.0,-0.18), vec2(0.13, 0.30)));
+      vec3 mc = mix(vec3(0.16,0.18,0.21), vec3(0.34,0.37,0.42), smoothstep(-0.13, 0.13, mp.x));
+      c = mix(c, mc, mot); alpha = max(alpha, mot);
+      c = mix(c, vec3(1.0,0.25,0.15), clamp(flash,0.0,1.0)*0.55);
+      res = vec4(c, alpha);
+    }
+
+  } else if (type == 6){                                    // foam puff
+    float r = length(q)/vQ.x;
+    float n = vnoise(q*5.0/vQ.x + seed*20.0);
+    float a = (1.0 - smoothstep(0.35, 1.0, r)) * (0.45 + 0.7*n) * vQ.z;
+    res = vec4(0.97, 0.99, 1.0, clamp(a, 0.0, 1.0));
+  }
+  o = res;
+}`;
+
+/* ---------- programs, buffers ---------- */
+const simProg   = makeProgram(FULLSCREEN_VS, simFS);
+const waterProg = makeProgram(FULLSCREEN_VS, waterFS);
+const sprProg   = makeProgram(SPR_VS, SPR_FS);
+
+const emptyVao = gl.createVertexArray();
+
+// simulation targets
+let simOK = false;
+const sim = { tex:[null,null], fbo:[null,null], r:0, w:1 };
+if (canRenderFloat){
+  for (let i=0;i<2;i++){
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, SIM_N, SIM_N, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    sim.tex[i] = t; sim.fbo[i] = fb;
+  }
+  simOK = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+const dummyTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, dummyTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+
+// sprite batch
+const MAX_SPRITES = 700, FLOATS = 12;
+const sprData = new Float32Array(MAX_SPRITES*6*FLOATS);
+let sprCount = 0;
+const sprVao = gl.createVertexArray(), sprBuf = gl.createBuffer();
+gl.bindVertexArray(sprVao); gl.bindBuffer(gl.ARRAY_BUFFER, sprBuf);
+gl.bufferData(gl.ARRAY_BUFFER, sprData.byteLength, gl.DYNAMIC_DRAW);
+[['aWorld',2,0],['aLocal',2,2],['aP',4,4],['aQ',4,8]].forEach(([n,sz,off]) => {
+  const loc = gl.getAttribLocation(sprProg, n); gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, sz, gl.FLOAT, false, FLOATS*4, off*4);
+});
+gl.bindVertexArray(null);
+
+function pushSprite(x, y, half, theta, type, seed, q0, q1, q2, q3){
+  if (sprCount >= MAX_SPRITES) return;
+  const c = Math.cos(theta), s = Math.sin(theta);
+  const corners = [[-half,-half],[half,-half],[half,half],[-half,-half],[half,half],[-half,half]];
+  let o = sprCount*6*FLOATS;
+  for (const [lx,ly] of corners){
+    sprData[o++] = x + lx*c - ly*s; sprData[o++] = y + lx*s + ly*c;
+    sprData[o++] = lx; sprData[o++] = ly;
+    sprData[o++] = theta; sprData[o++] = type; sprData[o++] = seed; sprData[o++] = 0;
+    sprData[o++] = q0; sprData[o++] = q1; sprData[o++] = q2; sprData[o++] = q3;
+  }
+  sprCount++;
+}
+
+/* ======================================================================
+   Game state and physics
+   ====================================================================== */
+const START_Y = 0;
+const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, hp:100, steer:0, throttle:0, flash:0 };
+let state = 'ready';                 // ready | run | over
+let time = 0, score = { gates:0, maxY:0 };
+let best = 0;
+try { best = +localStorage.getItem('riverrun.best') || 0; } catch(e) {}
+const input = { up:false, down:false, left:false, right:false };
+const cam = { x:0, y:0, half:14, shake:0 };
+const particles = [];
+
+function resetGame(){
+  boat.x = cx(START_Y); boat.y = START_Y; boat.th = 0; boat.vx = 0; boat.vy = 0; boat.w = 0;
+  boat.hp = 100; boat.steer = 0; boat.throttle = 0; boat.flash = 0;
+  score = { gates:0, maxY:0 };
+  gateState.clear(); cells.clear(); particles.length = 0;
+  cam.x = boat.x; cam.y = boat.y + 5; cam.shake = 0;
+  state = 'ready';
+  document.getElementById('over').classList.add('hide');
+  document.getElementById('start').classList.remove('hide');
+  updateHud(true);
+}
+function startGame(){
+  if (state !== 'ready') return;
+  const u = baseFlow(boat.x, boat.y); boat.vx = u[0]; boat.vy = u[1];
+  state = 'run';
+  document.getElementById('start').classList.add('hide');
+}
+
+// Water velocity at a point: river current plus potential flow bending around each rock.
+function waterVel(x, y, obs){
+  const U = baseFlow(x, y); let ux = U[0], uy = U[1];
+  for (const o of obs){
+    if (!o.rock) continue;
+    const dx = x - o.x, dy = y - o.y, d2 = dx*dx + dy*dy, a2 = o.r*o.r;
+    if (d2 > a2*30) continue;
+    const dd = Math.max(d2, a2), d = Math.sqrt(d2) || 1e-4;
+    const rx = dx/d, ry = dy/d, proj = U[0]*rx + U[1]*ry, k = a2/dd;
+    ux -= k*(2*proj*rx - U[0]); uy -= k*(2*proj*ry - U[1]);
+  }
+  return [ux, uy];
+}
+
+const THRUST = 7.0, THRUST_REV = 3.2, INERTIA = 0.64;
+const hullPts = [[0,0.85],[0,0],[0,-0.85]], HULL_R = 0.55;
+let near = [];
+
+function contact(wx, wy, n, pen, kind, canHurt){
+  boat.x += n[0]*pen; boat.y += n[1]*pen;
+  const rx = wx - boat.x, ry = wy - boat.y;
+  const vpx = boat.vx - boat.w*ry, vpy = boat.vy + boat.w*rx;
+  const vn = vpx*n[0] + vpy*n[1];
+  if (vn >= 0) return;
+  const rn = rx*n[1] - ry*n[0];
+  const e = kind === 'buoy' ? 0.55 : 0.32;
+  const j = -(1+e)*vn/(1 + rn*rn/INERTIA);
+  boat.vx += j*n[0]; boat.vy += j*n[1]; boat.w += j*rn/INERTIA;
+  const tx = -n[1], ty = n[0], vt = vpx*tx + vpy*ty;           // scrape friction
+  boat.vx -= tx*vt*0.12; boat.vy -= ty*vt*0.12;
+  const impact = -vn;
+  if (impact > 1.0){
+    cam.shake = Math.min(1, Math.max(cam.shake, impact/7));
+    for (let i=0;i<Math.min(8, impact*1.6);i++) spawnFoam(wx + (Math.random()-0.5)*0.6, wy + (Math.random()-0.5)*0.6, n[0]*impact*0.3 + (Math.random()-0.5)*2, n[1]*impact*0.3 + (Math.random()-0.5)*2, 1.2+Math.random(), 0.45, 0.6);
+  }
+  if (canHurt && kind !== 'buoy' && impact > 1.6){
+    boat.hp = Math.max(0, boat.hp - (impact-1.6)*5.5);
+    boat.flash = 1;
+    if (boat.hp <= 0) wreck();
+  }
+}
+
+function stepBoat(dt, controlled){
+  const b = boat;
+  const u = waterVel(b.x, b.y, near);
+  const fx = -Math.sin(b.th), fy = Math.cos(b.th), nx = Math.cos(b.th), ny = Math.sin(b.th);
+  const rvx = b.vx - u[0], rvy = b.vy - u[1];
+  const vf = rvx*fx + rvy*fy, vl = rvx*nx + rvy*ny;
+  const thr = controlled ? b.throttle : 0;
+  const thrust = thr > 0 ? thr*THRUST : thr*THRUST_REV;
+  const Ff = thrust - (0.35 + 0.08*Math.abs(vf))*vf;           // long axis: slippery
+  const Fl = -(4.6 + 0.8*Math.abs(vl))*vl;                     // sideways: keel bites
+  b.vx += (Ff*fx + Fl*nx)*dt; b.vy += (Ff*fy + Fl*ny)*dt;
+  const rudder = Math.min(1, (Math.abs(vf) + Math.abs(thrust)*0.6)/4);
+  const dir = vf < -0.4 ? -1 : 1;
+  const torque = (controlled ? b.steer : 0) * 6.2 * (0.3 + 0.7*rudder) * dir - 2.7*b.w - 0.3*vl*(vf >= 0 ? 1 : -1);
+  b.w += torque*dt;
+  b.x += b.vx*dt; b.y += b.vy*dt; b.th += b.w*dt;
+
+  for (const [lx, ly] of hullPts){
+    const c = Math.cos(b.th), s = Math.sin(b.th);
+    const wx = b.x + lx*c - ly*s, wy = b.y + lx*s + ly*c;
+    const bd = bankDist(wx, wy) - HULL_R;
+    if (bd < 0) contact(wx, wy, bankNormal(wx, wy), -bd, 'bank', controlled);
+    for (const o of near){
+      const dx = wx - o.x, dy = wy - o.y, dist = Math.hypot(dx, dy), pen = o.r + HULL_R - dist;
+      if (pen > 0 && dist > 1e-5) contact(wx, wy, [dx/dist, dy/dist], pen, o.rock ? 'rock' : 'buoy', controlled);
+    }
+  }
+}
+
+function checkGates(prevY){
+  for (const g of gatesNear(boat.y, 8)){
+    if (gateState.get(g.k)) continue;
+    if (prevY < g.y && boat.y >= g.y){
+      if (Math.abs(boat.x - g.mid) < g.gap){
+        gateState.set(g.k, 1); score.gates++; toast('Gate cleared  +50');
+      } else { gateState.set(g.k, 2); toast('Gate missed', true); }
+    }
+  }
+}
+
+function wreck(){
+  state = 'over';
+  const total = scoreTotal();
+  let newBest = false;
+  if (total > best){ best = total; newBest = true; try { localStorage.setItem('riverrun.best', String(best)); } catch(e) {} }
+  document.getElementById('overText').textContent =
+    `Score ${total}  (${Math.floor(score.maxY)} m, ${score.gates} gates). ` + (newBest ? 'New personal best!' : `Best ${best}.`);
+  document.getElementById('over').classList.remove('hide');
+}
+const scoreTotal = () => score.gates*50 + Math.floor(Math.max(0, score.maxY));
+
+/* ---------- foam particles (carried along by the current) ---------- */
+function spawnFoam(x, y, vx, vy, life, size, alpha){
+  if (particles.length > 320) particles.shift();
+  particles.push({ x, y, vx, vy, life, max:life, size, alpha, seed:Math.random() });
+}
+function updateParticles(dt){
+  for (let i=particles.length-1;i>=0;i--){
+    const p = particles[i]; p.life -= dt;
+    if (p.life <= 0 || bankDist(p.x, p.y) < -0.3){ particles.splice(i,1); continue; }
+    const u = baseFlow(p.x, p.y), k = Math.min(1, dt*1.6);
+    p.vx += (u[0]-p.vx)*k; p.vy += (u[1]-p.vy)*k;
+    p.x += p.vx*dt; p.y += p.vy*dt;
+  }
+}
+
+/* ---------- wave simulation driver ---------- */
+let simAcc = 0;
+function gatherSources(rs){
+  const src = [];
+  const b = boat, fx = -Math.sin(b.th), fy = Math.cos(b.th), nx = Math.cos(b.th), ny = Math.sin(b.th);
+  const k = Math.min(1.3, rs/7);
+  src.push([b.x + fx*1.15, b.y + fy*1.15, 0.42, 0.014*k]);                 // bow pushes water up
+  src.push([b.x + fx*0.2 + nx*0.5, b.y + fy*0.2 + ny*0.5, 0.35, -0.006*k]); // low pressure along the flanks
+  src.push([b.x + fx*0.2 - nx*0.5, b.y + fy*0.2 - ny*0.5, 0.35, -0.006*k]);
+  src.push([b.x - fx*1.2, b.y - fy*1.2, 0.40, -0.010*k]);                  // stern draws water in
+  const prop = Math.abs(b.throttle);
+  src.push([b.x - fx*1.45, b.y - fy*1.45, 0.30, 0.012*prop*Math.sin(time*38)]);  // propeller churn
+  for (const o of near){
+    if (!o.rock || src.length >= MAX_SRC) continue;
+    if (Math.hypot(o.x - b.x, o.y - b.y) > 22) continue;
+    const u = baseFlow(o.x, o.y), sp = Math.hypot(u[0], u[1]) || 1;
+    src.push([o.x - u[0]/sp*o.r*1.05, o.y - u[1]/sp*o.r*1.05, 0.30 + o.r*0.12, 0.008*sp*Math.sin(time*(5+o.seed*3) + o.seed*20)]);
+  }
+  return src;
+}
+function simStep(src){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sim.fbo[sim.w]);
+  gl.viewport(0, 0, SIM_N, SIM_N);
+  gl.useProgram(simProg);
+  gl.bindVertexArray(emptyVao);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sim.tex[sim.r]);
+  const u = simProg.u;
+  gl.uniform1i(u.uState, 0);
+  gl.uniform1f(u.uN, SIM_N); gl.uniform1f(u.uWorld, SIM_WORLD); gl.uniform1f(u.uDt, SIM_DT); gl.uniform1f(u.uC2, SIM_C2);
+  gl.uniform2f(u.uCam, boat.x, boat.y);
+  const arr = new Float32Array(MAX_SRC*4);
+  src.slice(0, MAX_SRC).forEach((s,i) => arr.set(s, i*4));
+  gl.uniform4fv(u.uSrc, arr);
+  gl.uniform1i(u.uCount, Math.min(src.length, MAX_SRC));
+  gl.disable(gl.BLEND);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const t = sim.r; sim.r = sim.w; sim.w = t;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+/* ---------- main update ---------- */
+function update(dt){
+  time += dt;
+  const target = (input.up ? 1 : 0) - (input.down ? 1 : 0);
+  const steerT = (input.left ? 1 : 0) - (input.right ? 1 : 0);
+  boat.throttle += (target - boat.throttle)*Math.min(1, dt*5);
+  boat.steer    += (steerT - boat.steer)*Math.min(1, dt*7);
+  boat.flash = Math.max(0, boat.flash - dt*2.5);
+  near = obstaclesNear(boat.y, 28);
+
+  const prevY = boat.y;
+  if (state === 'ready'){
+    boat.vx = boat.vy = boat.w = 0;                           // moored at the start line
+  } else {
+    const n = Math.max(1, Math.ceil(dt/(1/120))), h = dt/n;
+    for (let i=0;i<n;i++) stepBoat(h, state === 'run');
+    if (state === 'run'){ checkGates(prevY); score.maxY = Math.max(score.maxY, boat.y); }
+  }
+
+  // wake foam
+  const u = waterVel(boat.x, boat.y, near);
+  const rvx = boat.vx - u[0], rvy = boat.vy - u[1], rs = Math.hypot(rvx, rvy);
+  const fx = -Math.sin(boat.th), fy = Math.cos(boat.th), nx = Math.cos(boat.th), ny = Math.sin(boat.th);
+  const rate = (rs*5 + Math.abs(boat.throttle)*14) * dt;
+  let nspawn = Math.floor(rate + Math.random());
+  while (nspawn-- > 0 && state !== 'over'){
+    const jit = (Math.random()-0.5)*0.5;
+    spawnFoam(boat.x - fx*1.5 + nx*jit, boat.y - fy*1.5 + ny*jit, u[0] - fx*0.8 + nx*jit*2, u[1] - fy*0.8 + ny*jit*2, 2.0+Math.random()*1.6, 0.30+Math.random()*0.25, 0.55);
+  }
+  if (rs > 2.5 && Math.random() < dt*rs*3){
+    const side = Math.random() < 0.5 ? -1 : 1;
+    spawnFoam(boat.x + fx*0.9 + nx*0.55*side, boat.y + fy*0.9 + ny*0.55*side, u[0] + nx*side*1.1, u[1] + ny*side*1.1, 1.1+Math.random()*0.7, 0.22+Math.random()*0.15, 0.7);
+  }
+  updateParticles(dt);
+
+  // simulation
+  if (simOK){
+    simAcc += dt; let steps = 0;
+    while (simAcc >= SIM_DT && steps < 3){ simStep(gatherSources(rs)); simAcc -= SIM_DT; steps++; }
+    if (simAcc > SIM_DT*3) simAcc = 0;
+  }
+
+  // camera
+  const speed = Math.hypot(boat.vx, boat.vy);
+  const aspect = canvas.width/Math.max(1, canvas.height);
+  const halfT = Math.max(12.5 + speed*0.5, 11/aspect);
+  cam.half += (halfT - cam.half)*(1 - Math.exp(-dt*2.2));
+  const tx = boat.x + boat.vx*0.25, ty = boat.y + 3.5 + boat.vy*0.3;
+  const kk = 1 - Math.exp(-dt*4.5);
+  cam.x += (tx - cam.x)*kk; cam.y += (ty - cam.y)*kk;
+  cam.shake = Math.max(0, cam.shake - dt*2.2);
+
+  updateHud(false);
+}
+
+/* ---------- rendering ---------- */
+function drawScene(){
+  const aspect = canvas.width/canvas.height;
+  const sh = cam.shake*cam.shake*0.5;
+  const camX = cam.x + (Math.random()-0.5)*sh, camY = cam.y + (Math.random()-0.5)*sh;
+  const halfX = cam.half*aspect, halfY = cam.half;
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.disable(gl.BLEND);
+  gl.useProgram(waterProg); gl.bindVertexArray(emptyVao);
+  const w = waterProg.u;
+  gl.uniform2f(w.uCam, camX, camY); gl.uniform2f(w.uHalf, halfX, halfY);
+  gl.uniform1f(w.uTime, time); gl.uniform1f(w.uWorld, SIM_WORLD); gl.uniform1f(w.uSimN, SIM_N);
+  gl.uniform1f(w.uHasSim, simOK ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, simOK ? sim.tex[sim.r] : dummyTex);
+  gl.uniform1i(w.uSim, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // sprites, back to front
+  sprCount = 0;
+  const x0 = camX - halfX - 8, x1 = camX + halfX + 8, y0 = camY - halfY - 8, y1 = camY + halfY + 8;
+  const visible = obstaclesNear(camY, halfY + 10).filter(o => o.x > x0 && o.x < x1 && o.y > y0 && o.y < y1);
+  const sd = [0.32, -0.40];
+  for (const o of visible){
+    if (o.rock) pushSprite(o.x + sd[0]*o.r, o.y + sd[1]*o.r, o.r*2.0, 0, 0, 0, o.r*1.25, 0, 0, 0.28);
+    else pushSprite(o.x + 0.12, o.y - 0.16, 0.8, 0, 0, 0, 0.5, 0, 0, 0.3);
+  }
+  for (const o of visible){
+    if (o.rock){
+      const u = baseFlow(o.x, o.y);
+      const half = o.r*5 + 1.5;
+      pushSprite(o.x, o.y, half, 0, 1, o.seed, o.r, u[0], u[1], 1);
+    }
+  }
+  for (const p of particles){
+    const a = Math.min(1, (p.life/p.max)*1.8) * p.alpha, size = p.size*(1 + (1 - p.life/p.max)*1.6);
+    pushSprite(p.x, p.y, size, 0, 6, p.seed, size, 0, a, 0);
+  }
+  for (const o of visible) if (o.rock) pushSprite(o.x, o.y, o.r*1.5, 0, 2, o.seed, o.r, 0, 0, 0);
+  for (const o of visible) if (!o.rock){
+    const g = gateState.get(Math.floor(o.y/CELL));
+    const id = g === 1 ? 2 : g === 2 ? 3 : o.buoy;
+    pushSprite(o.x, o.y, 0.75, 0, 3, (o.x*0.37 + o.y*0.11)%1, id, 0, 0, 0);
+  }
+  pushSprite(boat.x + 0.35, boat.y - 0.45, 2.1, boat.th, 5, 0, 0, 0, 0, 0);
+  pushSprite(boat.x, boat.y, 2.1, boat.th, 4, 0, boat.steer, 0, boat.flash, 0);
+
+  gl.useProgram(sprProg); gl.bindVertexArray(sprVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, sprBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, sprData, 0, sprCount*6*FLOATS);
+  const s = sprProg.u;
+  gl.uniform2f(s.uCam, camX, camY); gl.uniform2f(s.uHalf, halfX, halfY); gl.uniform1f(s.uTime, time);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.drawArrays(gl.TRIANGLES, 0, sprCount*6);
+  gl.disable(gl.BLEND);
+}
+
+/* ---------- HUD ---------- */
+const el = id => document.getElementById(id);
+const hudCache = {};
+function setText(id, text){ if (hudCache[id] !== text){ hudCache[id] = text; el(id).textContent = text; } }
+function updateHud(force){
+  setText('dist', Math.max(0, Math.floor(score.maxY)) + ' m');
+  setText('gates', String(score.gates));
+  setText('spd', Math.round(Math.hypot(boat.vx, boat.vy)*3.6) + ' km/h');
+  const hp = Math.round(boat.hp);
+  if (force || hudCache.hp !== hp){
+    hudCache.hp = hp; const bar = el('hp'); bar.style.width = hp + '%';
+    bar.style.background = hp > 55 ? 'var(--good)' : hp > 25 ? 'var(--accent)' : 'var(--bad)';
+  }
+}
+let toastTimer = 0;
+function toast(msg, bad){
+  const t = el('toast'); t.textContent = msg; t.className = 'on' + (bad ? ' bad' : '');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ''; }, 1100);
+}
+
+/* ---------- input ---------- */
+const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right' };
+addEventListener('keydown', e => {
+  const k = keymap[e.code];
+  if (k){ input[k] = true; e.preventDefault(); if (state === 'ready') startGame(); }
+  else if (e.code === 'KeyR' || (state === 'over' && (e.code === 'Space' || e.code === 'Enter'))){ resetGame(); startGame(); }
+});
+addEventListener('keyup', e => { const k = keymap[e.code]; if (k) input[k] = false; });
+addEventListener('blur', () => { for (const k in input) input[k] = false; });
+el('go').addEventListener('click', startGame);
+el('again').addEventListener('click', () => { resetGame(); startGame(); });
+document.querySelectorAll('#touch button').forEach(b => {
+  const k = b.dataset.k;
+  const on = e => { e.preventDefault(); input[k] = true; if (state === 'ready') startGame(); };
+  const off = e => { e.preventDefault(); input[k] = false; };
+  b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
+});
+
+/* ---------- resize and loop ---------- */
+function resize(){
+  // Cap the pixel count (about 1080p worth) so integrated graphics stay smooth on large or high density screens.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(2.3e6/Math.max(1, innerWidth*innerHeight)));
+  const w = Math.max(1, Math.floor(innerWidth*dpr)), h = Math.max(1, Math.floor(innerHeight*dpr));
+  if (canvas.width !== w || canvas.height !== h){ canvas.width = w; canvas.height = h; }
+}
+addEventListener('resize', resize); resize();
+
+let last = performance.now();
+let manual = false;                  // automated checks can step the game at an exact frame time
+function frame(now){
+  const dt = Math.min(0.05, Math.max(0.001, (now - last)/1000)); last = now;
+  resize();
+  if (!manual){ update(dt); drawScene(); }
+  requestAnimationFrame(frame);
+}
+resetGame();
+requestAnimationFrame(frame);
+
+// Handle for automated checks.
+window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; }, get score(){ return score; },
+  startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, cx, hw, baseFlow, get particles(){ return particles.length; } };
+})();
+</script>
+</body>
+</html>
