@@ -552,7 +552,7 @@ vec3 toSrgb(vec3 c){ return pow(clamp(c, 0.0, 1.0), vec3(1.0/2.2)); }
 // Water depth in meters (negative on land): stands in for Godot's depth buffer read.
 float waterDepth(vec2 p){
   float d = bankD(p);
-  float D = d < 0.0 ? d : 6.0*pow(min(d/14.0, 1.0), 0.65);  // a sandy shelf that drops away over about 14 m
+  float D = d < 0.0 ? d : 14.0*pow(min(d/40.0, 1.0), 0.75);  // a sandy shelf that drops to about 14 m in open water
   for (int i=0;i<${MAX_ROCKS};i++){
     if (i >= uRockCount) break;
     D = min(D, (length(p - uRocks[i].xy) - uRocks[i].z)*3.0);
@@ -602,43 +602,69 @@ void main(){
   vec3 col;
 
   if (d > -0.3){
-    /* ---- a still lake: no waves. Color from depth, the sandy bed seen through clear
-       shallows with soft drifting light, a thin lapping shoreline, and the sky mirrored
-       on the surface (clouds and stars by position, stronger toward the far edge). ---- */
+    /* ================= lake water =================
+       Surface: fine wind ripples from six travelling wave trains (deep water dispersion,
+       analytic slopes, so nothing tiles) plus the boat wake from the live simulation.
+       Body: Beer-Lambert absorption over the light path through the water, so the sand
+       turns turquoise, then teal, then sapphire on its own. The bed is seen through the
+       rippled surface (refraction) with caustic lines. Top: Fresnel sky reflection with
+       clouds and stars, sun glints on ripple crests, foam lapping at the shore.        */
     float D = waterDepth(p);
-    float sh = clamp(1.0 - D/7.0, 0.0, 1.0);                       // 1 at the shore, 0 past 7 m
-    vec3 deepC = toLinear(vec3(0.03, 0.25, 0.45)), midC = toLinear(vec3(0.02, 0.50, 0.64)), shalC = toLinear(vec3(0.24, 0.86, 0.82));
-    vec3 color = mix(deepC, midC, smoothstep(0.0, 0.75, sh));
-    color = mix(color, shalC, smoothstep(0.7, 1.0, sh));
-    float ca = textureLod(uCaus, p*0.06 + vec2(uTime*0.012, uTime*0.008), 3.5).r;
-    float cb = textureLod(uCaus, p*0.045 - vec2(uTime*0.009, -uTime*0.011) + 0.37, 3.5).r;
-    float glow = ca*cb;                                              // soft patches of light on the sand
-    vec3 bed = toLinear(mix(vec3(0.78, 0.74, 0.56), vec3(0.88, 0.84, 0.66), vnoise(p*0.22)))*(0.9 + 0.9*glow*sh);   // clean pale sand, soft light patches
-    // caustic lines on the bottom (the Godot shader's two layer caustics), brightest in the shallows
-    float c1 = texture(uCaus, p*0.16 + vec2(uTime*0.02, uTime*0.013)).r;
-    vec3 caus = pow(sampleCaustics(p*0.34 + c1*0.05 - vec2(uTime*0.016, -uTime*0.01))*CAUSTICS_STRENGTH, vec3(2.0));
-    float causW = pow(sh, 2.2);                                   // gone by about 4 m deep
-    bed += caus*0.3*causW;
-    color = mix(color, bed*vec3(0.62, 0.95, 0.92), pow(sh, 2.2)*0.6);
-    color += caus*0.04*causW;
+    // ---- surface slope ----
+    const vec3 TR[6] = vec3[6](vec3(0.89, 0.45, 1.9), vec3(-0.60, 0.80, 1.3), vec3(0.20, -0.98, 2.7),
+                               vec3(-0.95, -0.31, 3.6), vec3(0.71, -0.71, 5.1), vec3(-0.25, 0.97, 7.3));
+    vec2 g = vec2(0.0); float crest = 0.0;
+    for (int i=0;i<6;i++){
+      vec2 dir = normalize(TR[i].xy); float k = TR[i].z, w = sqrt(9.81*k);
+      float ph = dot(dir, p)*k - w*uTime*0.6 + float(i)*1.7;
+      g += dir*((0.006 + 0.0045*k)*cos(ph));                      // long swells stay flat, short ripples carry the detail
+      if (i >= 3) crest += sin(ph);
+    }
+    float rough = mix(0.35, 1.0, smoothstep(0.25, 0.75, fbm(p*0.03 + vec2(uTime*0.012, -uTime*0.007))));   // calm slicks and rougher patches
+    g *= rough*smoothstep(0.0, 1.2, D);
+    vec2 simG = vec2(0.0);
+    if (uHasSim > 0.5){
+      float dx = uWorld/uSimN;
+      simG = vec2(texture(uSim, (p+vec2(dx,0.0))/uWorld).r - texture(uSim, (p-vec2(dx,0.0))/uWorld).r,
+                  texture(uSim, (p+vec2(0.0,dx))/uWorld).r - texture(uSim, (p-vec2(0.0,dx))/uWorld).r)/(2.0*dx);
+    }
+    vec3 N = normalize(vec3(-(g + simG*0.9), 1.0));
+    vec3 V = vec3(0.0, -uSinT, uCosT);
+    // ---- the bed, seen through the surface ----
+    vec2 bp = p + N.xy*clamp(D, 0.0, 2.5)*0.55;                    // refraction: deeper water bends more
+    float Db = max(waterDepth(bp), 0.0);
+    vec3 sand = toLinear(mix(vec3(0.60, 0.55, 0.40), vec3(0.72, 0.66, 0.48), vnoise(bp*0.22)));
+    float c1 = texture(uCaus, bp*0.16 + vec2(uTime*0.02, uTime*0.013)).r;
+    vec3 caus = pow(sampleCaustics(bp*0.34 + c1*0.05 + N.xy*0.15 - vec2(uTime*0.016, -uTime*0.01))*CAUSTICS_STRENGTH, vec3(2.0));
+    vec3 sunIn = uAmbient + uLightCol*max(uLightDir.z, 0.0)*1.15;   // light reaching into the water
+    vec3 bed = sand*sunIn + caus*0.45*uLightCol*exp(-Db*0.45);
+    // ---- absorption and scattering ----
+    vec3 absorb = vec3(0.45, 0.11, 0.065);                         // per meter, red goes first
+    vec3 T = exp(-absorb*Db*2.0);                                  // down to the bed and back up
+    vec3 scatter = toLinear(vec3(0.02, 0.24, 0.40))*sunIn;         // deep lake color
+    vec3 body = bed*T + scatter*(1.0 - T);
+    // ---- reflection ----
+    vec3 R = reflect(-V, N);
+    vec3 skyR = min(skyColor(vec3(R.x, R.z, -R.y)), vec3(1.0));
+    float cl = cloudAt(p*0.6 + vec2(0.0, 40.0) + R.xy*25.0);
+    skyR = mix(skyR, vec3(0.86)*(0.2 + 0.8*uDay), min(cl*2.5, 1.0)*0.45);
+    skyR += smoothstep(0.9, 0.95, texture(uStars, p*0.012 + R.xy*0.15).r)*clamp(-uBlend*2.0, 0.0, 1.0)*0.9;
+    float F = 0.02 + 0.98*pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
+    float refl = clamp(0.07 + F*1.5 + 0.14*(vNdc.y*0.5 + 0.5), 0.0, 0.5)*smoothstep(0.0, 0.35, D);
+    vec3 lit = mix(body, toLinear(skyR), refl);
+    // ---- sun (or moon) glints on ripple crests ----
+    float tw = vnoise(p*2.3 + vec2(uTime*0.7, -uTime*0.5));
+    float glint = smoothstep(2.5, 2.95, crest*rough)*smoothstep(0.7, 0.9, tw)*smoothstep(0.3, 1.2, D);
+    lit += uLightCol*glint*mix(0.12, 3.0, uDay)*smoothstep(0.05, 0.3, uLightDir.z);
+    // ---- foam at the shore: lapping edge and ripples rolling in ----
     float lap = 0.18 + 0.12*sin(uTime*0.9 + fbm(p*0.15)*6.0);
     float shape = texture(uFoam, p*0.35 + vec2(uTime*0.02, 0.0)).r;
     float foam = (1.0 - smoothstep(lap*0.5, lap, D))*smoothstep(0.25, 0.6, shape + 0.35);
-    // ripples rolling in toward the beach and foaming as they reach it
     float rip = 0.5 + 0.5*sin(D*9.0 - uTime*2.2 + fbm(p*0.2)*4.0);
     float shape2 = texture(uFoam, p*0.5 + vec2(0.0, uTime*0.03)).r;
-    float ripFoam = smoothstep(0.72, 0.95, rip)*(1.0 - smoothstep(0.0, 1.5, D))*smoothstep(0.45, 0.8, shape2 + 0.1);
-    foam = max(foam, ripFoam*0.75);
-    color = mix(color, vec3(0.92), foam*0.85);
-    vec3 lit = uToon > 0.5
-      ? color*(uAmbient + stepped(max(uLightDir.z, 0.0), DIFFUSE_STEPS, DIFFUSE_SMOOTHNESS)*uLightCol*1.1)
-      : color*(uAmbient + 1.1*max(uLightDir.z, 0.0)*uLightCol);
-    vec3 V = vec3(0.0, -uSinT, uCosT), Rd = reflect(-V, vec3(0.0, 0.0, 1.0));
-    vec3 skyR = min(skyColor(vec3(Rd.x, Rd.z, -Rd.y)), vec3(1.0));
-    float cl = cloudAt(p*0.6 + vec2(0.0, 40.0));
-    skyR = mix(skyR, vec3(0.85)*(0.2 + 0.8*uDay), min(cl*2.5, 1.0)*0.8);
-    skyR += smoothstep(0.9, 0.95, texture(uStars, p*0.012).r)*clamp(-uBlend*2.0, 0.0, 1.0)*0.8;
-    lit = mix(lit, toLinear(skyR), (0.06 + 0.16*(vNdc.y*0.5 + 0.5))*(1.0 - foam));
+    foam = max(foam, smoothstep(0.72, 0.95, rip)*(1.0 - smoothstep(0.0, 1.5, D))*smoothstep(0.45, 0.8, shape2 + 0.1)*0.75);
+    lit = mix(lit, vec3(0.9)*sunIn, foam*0.85);
+    if (uToon > 0.5) lit = floor(lit*6.0 + 0.5)/6.0;                // T: posterized look
     lit *= cloudShade(p);
     col = toSrgb(lit);
   }
@@ -1576,7 +1602,7 @@ function updateParticles(dt){
 
 /* ---------- wave simulation driver ---------- */
 let simAcc = 0;
-const RIPPLES = false;                // still water: the wave simulation is off (the wake shows as foam only)
+const RIPPLES = true;                 // still water: the wave simulation is off (the wake shows as foam only)
 function gatherSources(rs){
   const src = [];
   const b = boat, fx = -Math.sin(b.th), fy = Math.cos(b.th), nx = Math.cos(b.th), ny = Math.sin(b.th);
