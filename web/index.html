@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>River Run</title>
-<meta name="description" content="A top down WebGL river boat game with a live water wave simulation. Steer with W A S D.">
+<meta name="description" content="A WebGL boat game on a randomly generated forest lake with a live water simulation and a day and night sky. Steer with W A S D.">
 <style>
   :root{
     --ink:#f4fbfb; --ink2:#bcd7da; --panel:rgba(8,32,40,.72); --edge:rgba(160,220,225,.25);
@@ -42,6 +42,9 @@
   #board li{padding:2px 0}
   #board li span{float:right;color:var(--accent);font-weight:700}
   #board .dim{list-style:none;margin-left:-26px;color:var(--ink2)}
+  #arrow{position:fixed;left:0;top:0;width:36px;height:36px;display:none;color:var(--accent);font-size:30px;line-height:36px;text-align:center;
+    text-shadow:0 2px 8px rgba(0,0,0,.6);pointer-events:none;transform-origin:18px 18px}
+  .credit{font-size:12px;opacity:.7}
   .hide{display:none!important}
   #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
   #touch{position:fixed;left:0;right:0;bottom:18px;display:none;justify-content:space-between;padding:0 18px;pointer-events:none}
@@ -58,16 +61,19 @@
   <div class="chip"><span class="k">Gates</span><span class="v" id="gates">0</span></div>
   <div class="chip"><span class="k">Speed</span><span class="v" id="spd">0 km/h</span></div>
   <div class="chip"><span class="k">Hull</span><div class="bar"><i id="hp"></i></div></div>
+  <div class="chip"><span class="k">Time</span><span class="v" id="clock">06:00</span></div>
 </div>
+<div id="arrow">&#10148;</div>
 <div id="toast"></div>
 
 <div id="start" class="panel">
   <div class="card">
     <h1>River Run</h1>
-    <p>Ride the current downstream. Thread the buoy gates, dodge the rocks, keep your hull in one piece.</p>
+    <p>Lap the island. Thread the buoy gates in order, follow the arrow, stay off the rocks. A full day passes every ten minutes.</p>
     <div class="keys"><b>W</b><b>A</b><b>S</b><b>D</b></div>
     <p>W throttle, S brake and reverse, A and D steer. T switches between standard and toon water.</p>
-    <button class="go" id="go">Press any movement key to launch</button>
+    <button class="go" id="go">Loading the forest...</button>
+    <p class="credit">Nature models: KayKit Forest Nature Pack by Kay Lousberg (CC0)</p>
   </div>
 </div>
 
@@ -95,97 +101,206 @@
 'use strict';
 
 /* ======================================================================
-   River definition. One set of constants drives the physics (JavaScript)
-   and the shaders (GLSL), so what you see is exactly what you collide with.
+   Lake definition. A new random lake and island on every visit (?seed=N
+   repeats one). One set of numbers drives the physics and the shaders.
    ====================================================================== */
-const R = { a1:9, k1:0.045, a2:4, k2:0.11, p2:1.7, a3:1.2, k3:0.23, p3:0.4,
-            w0:7.5, w1:1.8, kw1:0.031, pw1:0.9, w2:0.8, kw2:0.09 };
-const cx  = y => R.a1*Math.sin(y*R.k1) + R.a2*Math.sin(y*R.k2+R.p2) + R.a3*Math.sin(y*R.k3+R.p3);
-const dcx = y => R.a1*R.k1*Math.cos(y*R.k1) + R.a2*R.k2*Math.cos(y*R.k2+R.p2) + R.a3*R.k3*Math.cos(y*R.k3+R.p3);
-const hw  = y => R.w0 + R.w1*Math.sin(y*R.kw1+R.pw1) + R.w2*Math.sin(y*R.kw2);
-
-function baseFlow(x, y){
-  const s = x - cx(y), h = hw(y);
-  const q = Math.min(1, Math.abs(s)/h);
-  const speed = 2.0*Math.pow(7.5/h, 0.7) * (0.3 + 0.7*(1-q*q));  // fast mid channel, slow near banks
-  const m = dcx(y), inv = 1/Math.sqrt(1+m*m);
-  return [m*inv*speed, inv*speed];
-}
-function bankDist(x, y){            // positive inside the river, negative on land
-  const m = dcx(y);
-  return (hw(y) - Math.abs(x - cx(y)))/Math.sqrt(1+m*m);
-}
-function bankNormal(x, y){          // points from land into the river
-  const e = 0.05;
-  const gx = bankDist(x+e,y) - bankDist(x-e,y), gy = bankDist(x,y+e) - bankDist(x,y-e);
-  const l = Math.hypot(gx, gy) || 1;
-  return [gx/l, gy/l];
-}
-
-const f5 = n => n.toFixed(5);
-const RIVER_GLSL = `
-const float A1=${f5(R.a1)},K1=${f5(R.k1)},A2=${f5(R.a2)},K2=${f5(R.k2)},P2=${f5(R.p2)},A3=${f5(R.a3)},K3=${f5(R.k3)},P3=${f5(R.p3)};
-const float W0=${f5(R.w0)},W1=${f5(R.w1)},KW1=${f5(R.kw1)},PW1=${f5(R.pw1)},W2=${f5(R.w2)},KW2=${f5(R.kw2)};
-float cxf(float y){ return A1*sin(y*K1)+A2*sin(y*K2+P2)+A3*sin(y*K3+P3); }
-float dcxf(float y){ return A1*K1*cos(y*K1)+A2*K2*cos(y*K2+P2)+A3*K3*cos(y*K3+P3); }
-float hwf(float y){ return W0+W1*sin(y*KW1+PW1)+W2*sin(y*KW2); }
-float bankD(vec2 p){ float m=dcxf(p.y); return (hwf(p.y)-abs(p.x-cxf(p.y)))/sqrt(1.0+m*m); }
-vec2 flowAt(vec2 p){
-  float s=p.x-cxf(p.y), h=hwf(p.y); float q=min(1.0,abs(s)/h);
-  float sp=2.0*pow(7.5/h,0.7)*(0.3+0.7*(1.0-q*q));
-  float m=dcxf(p.y); float inv=inversesqrt(1.0+m*m);
-  return vec2(m*inv,inv)*sp;
-}`;
-
-/* ======================================================================
-   Procedural obstacles: rocks and buoy gates, generated per river cell.
-   ====================================================================== */
-const CELL = 12;
 function rng(seed){
   let s = seed|0;
   return () => { s = (s + 0x6D2B79F5)|0; let t = Math.imul(s ^ (s>>>15), 1|s);
     t = (t + Math.imul(t ^ (t>>>7), 61|t)) ^ t; return ((t ^ (t>>>14))>>>0)/4294967296; };
 }
-const cells = new Map();
-const gateState = new Map();          // cell index -> 0 pending, 1 passed, 2 missed
-function cellData(k){
-  let c = cells.get(k);
-  if (c) return c;
-  const r = rng(k*7919 + 1337);
-  c = { k, obs: [], gate: null };
-  if (k >= 1 && k % 4 === 1){
-    const gy = k*CELL + CELL/2, h = hw(gy);
-    const gap = Math.min(3.3, h - 1.5), mid = cx(gy);
-    c.gate = { k, y: gy, mid, gap };
-    c.obs.push({ x: mid-gap, y: gy, r: 0.42, buoy: 0 }, { x: mid+gap, y: gy, r: 0.42, buoy: 1 });
+const SEED = (() => { try { const v = +new URLSearchParams(location.search).get('seed'); if (v) return v|0; } catch(e) {} return (Math.random()*2147483646 + 1)|0; })();
+const wrand = rng(SEED);
+const HARM = 6;
+const LAKE = { R: 100 + wrand()*25, I: 18 + wrand()*7, ao: [], po: [], ai: [], pi: [] };
+for (let k=1;k<=HARM;k++){
+  LAKE.ao.push((wrand()*2-1)*0.12/Math.pow(k, 1.1)); LAKE.po.push(wrand()*6.2832);
+  LAKE.ai.push((wrand()*2-1)*0.20/Math.pow(k, 1.0)); LAKE.pi.push(wrand()*6.2832);
+}
+function shapeR(base, a, ph, th){ let v = 1; for (let k=0;k<HARM;k++) v += a[k]*Math.sin((k+1)*th + ph[k]); return base*v; }
+const outerR  = th => shapeR(LAKE.R, LAKE.ao, LAKE.po, th);
+const islandR = th => shapeR(LAKE.I, LAKE.ai, LAKE.pi, th);
+function bankDist(x, y){            // positive on the water, negative on land (outer shore and island)
+  const r = Math.hypot(x, y), th = Math.atan2(y, x);
+  return Math.min(outerR(th) - r, r - islandR(th))*0.9;
+}
+function bankNormal(x, y){          // points from land into the water
+  const e = 0.05;
+  const gx = bankDist(x+e,y) - bankDist(x-e,y), gy = bankDist(x,y+e) - bankDist(x,y-e);
+  const l = Math.hypot(gx, gy) || 1;
+  return [gx/l, gy/l];
+}
+function baseFlow(x, y){            // a slow circulation around the island, still at the shores
+  const r = Math.hypot(x, y) || 1, sp = 0.35*Math.min(1, Math.max(0, bankDist(x, y)/6));
+  return [-y/r*sp, x/r*sp];
+}
+const fArr = a => 'float[' + HARM + '](' + a.map(v => v.toFixed(5)).join(',') + ')';
+const WORLD_GLSL = `
+const float LR = ${LAKE.R.toFixed(4)}, LI = ${LAKE.I.toFixed(4)};
+const float AO[${HARM}] = ${fArr(LAKE.ao)}; const float PO[${HARM}] = ${fArr(LAKE.po)};
+const float AI[${HARM}] = ${fArr(LAKE.ai)}; const float PI_[${HARM}] = ${fArr(LAKE.pi)};
+float bankD(vec2 p){
+  float r = length(p), th = atan(p.y, p.x), so = 1.0, si = 1.0;
+  for (int k=0;k<${HARM};k++){ float fk = float(k+1); so += AO[k]*sin(fk*th + PO[k]); si += AI[k]*sin(fk*th + PI_[k]); }
+  return min(LR*so - r, r - LI*si)*0.9;
+}
+vec2 flowAt(vec2 p){ float r = max(length(p), 1.0); return vec2(-p.y, p.x)/r*0.35*clamp(bankD(p)/6.0, 0.0, 1.0); }`;
+
+/* ======================================================================
+   World population: KayKit props (rule based, randomized), shallow water
+   rocks and a loop of buoy gates around the island.
+   ====================================================================== */
+const GRID = 16;
+let propGrid = new Map(), obsGrid = new Map(), props = [], gates = [];
+let nextGate = 0, lap = 0;
+const gkey = (i, j) => (i + 4096)*8192 + (j + 4096);
+function gridAdd(map, o){ const k = gkey(Math.floor(o.x/GRID), Math.floor(o.y/GRID)); let a = map.get(k); if (!a) map.set(k, a = []); a.push(o); }
+function gridQuery(map, x0, y0, x1, y1, out){
+  for (let i = Math.floor(x0/GRID); i <= Math.floor(x1/GRID); i++)
+    for (let j = Math.floor(y0/GRID); j <= Math.floor(y1/GRID); j++){ const a = map.get(gkey(i, j)); if (a) for (const o of a) out.push(o); }
+  return out;
+}
+const obstaclesNear = (x, y, r) => gridQuery(obsGrid, x - r, y - r, x + r, y + r, []);
+function hash2(i, j, s){ let h = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(s, 1442695041); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0)/4294967296; }
+function vnoise2(x, y, s){
+  const i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j, ux = fx*fx*(3-2*fx), uy = fy*fy*(3-2*fy);
+  const a = hash2(i,j,s), b = hash2(i+1,j,s), c = hash2(i,j+1,s), d = hash2(i+1,j+1,s);
+  return a + (b-a)*ux + (c-a)*uy + (a-b-c+d)*ux*uy;
+}
+const fbm2 = (x, y, s) => 0.5*vnoise2(x, y, s) + 0.3*vnoise2(x*2.1, y*2.1, s+7) + 0.2*vnoise2(x*4.3, y*4.3, s+13);
+const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a)/(b - a))); return t*t*(3 - 2*t); };
+
+const SPAWN_TH = -Math.PI/2;
+const spawn = { x: 0, y: 0, th: -Math.PI/2 };
+function generateGates(){
+  const R = rng(SEED ^ 0x51ed27);
+  const ringR = th => islandR(th) + (outerR(th) - islandR(th))*0.87;
+  spawn.x = Math.cos(SPAWN_TH)*ringR(SPAWN_TH); spawn.y = Math.sin(SPAWN_TH)*ringR(SPAWN_TH);
+  gates = []; obsGrid = new Map();
+  const NG = 8;
+  for (let i=0;i<NG;i++){
+    const th = SPAWN_TH + 0.5 + i*(Math.PI*2/NG) + (R() - 0.5)*0.3;
+    // the route weaves: near the outer shore, then near the island, so the scenery stays in view
+    const ri = islandR(th), ro = outerR(th), rm = ri + (ro - ri)*(i % 2 === 0 ? 0.82 + R()*0.06 : 0.14 + R()*0.06);
+    const rad = [Math.cos(th), Math.sin(th)], tan = [-Math.sin(th), Math.cos(th)];
+    const g = { i, x: rad[0]*rm, y: rad[1]*rm, rad, tan, gap: 3.4 };
+    while (g.gap > 2.2 && (bankDist(g.x + rad[0]*g.gap, g.y + rad[1]*g.gap) < 2.5 || bankDist(g.x - rad[0]*g.gap, g.y - rad[1]*g.gap) < 2.5)) g.gap -= 0.2;
+    gates.push(g);
+    for (const sg of [-1, 1]) gridAdd(obsGrid, { x: g.x + rad[0]*g.gap*sg, y: g.y + rad[1]*g.gap*sg, r: 0.42, buoy: sg < 0 ? 0 : 1, gate: i });
   }
-  if (k >= 2){
-    const diff = Math.min(1, k/70);
-    const n = Math.floor(r()*(1.4 + diff*2.2));
-    for (let i=0;i<n;i++){
-      const y = k*CELL + r()*CELL, rad = 0.5 + r()*(0.55 + diff*0.5), h = hw(y);
-      const lat = (r()*2-1)*Math.max(0, h - rad - 1.0);
-      if (c.gate && Math.abs(y - c.gate.y) < 4) continue;
-      c.obs.push({ x: cx(y)+lat, y, r: rad, rock: true, seed: r() });
+}
+
+// Every rule below exists so nothing looks out of place: trees only on firm ground in
+// forest patches of one species, bushes on forest edges, dead trees in clearings, boulders
+// with smaller rocks around them, pebbles along the beach, rocks in the shallows only on
+// rocky stretches of shore, and nothing overlapping or blocking a gate or the start.
+function generateProps(M){
+  const R = rng(SEED ^ 0x2545f491);
+  const pick = a => a[Math.floor(R()*a.length)];
+  const by = pre => M.filter(m => m.name.startsWith(pre));
+  const species = [1, 2, 3, 4].map(n => by('Tree_' + n + '_'));
+  const bare = by('Tree_Bare_'), grass = by('Grass_');
+  const bushSets = [1, 2, 3, 4].map(n => by('Bush_' + n + '_'));
+  const rk = M.filter(m => m.name.startsWith('Rock_'));
+  const small = rk.filter(m => m.height < 0.8), mid = rk.filter(m => m.height >= 0.8 && m.height < 2.0), big = rk.filter(m => m.height >= 2.0);
+  props = []; propGrid = new Map();
+  const occ = new Map(), OC = 4;
+  const free = (x, y, r, f) => {
+    for (const o of gridQueryOcc(x, y, r + 6)) if (Math.hypot(o.x - x, o.y - y) < (o.r + r)*f) return false;
+    return true;
+  };
+  function gridQueryOcc(x, y, r){
+    const out = [];
+    for (let i = Math.floor((x-r)/OC); i <= Math.floor((x+r)/OC); i++) for (let j = Math.floor((y-r)/OC); j <= Math.floor((y+r)/OC); j++){ const a = occ.get(gkey(i, j)); if (a) for (const o of a) out.push(o); }
+    return out;
+  }
+  function place(m, x, y, sc, occR, z){
+    const p = { m, x, y, z: z || 0, rot: R()*Math.PI*2, s: sc, tint: 0.9 + R()*0.18 };
+    props.push(p); gridAdd(propGrid, p);
+    const k = gkey(Math.floor(x/OC), Math.floor(y/OC)); let a = occ.get(k); if (!a) occ.set(k, a = []); a.push({ x, y, r: occR });
+    return p;
+  }
+  const landPt = (s0, s1) => { const th = R()*Math.PI*2, r = outerR(th) + (s0 + R()*(s1 - s0))/0.9; return [Math.cos(th)*r, Math.sin(th)*r]; };
+  const islandPt = () => { const th = R()*Math.PI*2, r = islandR(th)*Math.sqrt(R())*0.95; return [Math.cos(th)*r, Math.sin(th)*r]; };
+  const forest = (x, y) => fbm2(x*0.025, y*0.025, SEED & 1023);
+  const speciesAt = (x, y) => Math.min(3, Math.floor(vnoise2(x*0.012 + 50, y*0.012, (SEED >> 4) & 1023)*4));
+  const nearSpawnOrGate = (x, y, d) => Math.hypot(x - spawn.x, y - spawn.y) < d + 6 || gates.some(g => Math.hypot(x - g.x, y - g.y) < d + g.gap);
+
+  // landmark on the island: the biggest broadleaf tree in a small clearing, rocks beside it
+  const hero = species[0][species[0].length - 1];
+  place(hero, LAKE.I*0.08, LAKE.I*0.05, 1.25, hero.radius*1.25);
+  const heroRock = big[0];
+  place(heroRock, -LAKE.I*0.35, -LAKE.I*0.25, 1.0, heroRock.base);
+
+  function trees(n, pt, minS){
+    for (let t=0;t<n;t++){
+      const [x, y] = pt(); const s = -bankDist(x, y); if (s < minS) continue;
+      const dens = forest(x, y);
+      if (R() > smooth(0.38, 0.6, dens)*(0.35 + 0.65*smooth(minS, 14, s))) continue;
+      const list = species[speciesAt(x, y)], deep = smooth(0.45, 0.75, dens);
+      const m = list[Math.min(list.length - 1, Math.floor((R()*0.7 + deep*0.5)*list.length))];
+      const sc = 0.8 + R()*0.45;
+      if (free(x, y, m.radius*sc, 0.78)) place(m, x, y, sc, m.radius*sc);
     }
   }
-  cells.set(k, c);
-  return c;
-}
-function obstaclesNear(y, range){
-  const out = [];
-  for (let k = Math.floor((y-range)/CELL); k <= Math.floor((y+range)/CELL); k++){
-    const c = cellData(k); for (const o of c.obs) out.push(o);
+  trees(9000, () => landPt(3, 62), 3.5);
+  trees(500, islandPt, 3.0);
+  for (let t=0;t<700;t++){                                   // dead trees: clearings only
+    const [x, y] = t < 600 ? landPt(5, 60) : islandPt(); if (-bankDist(x, y) < 4) continue;
+    if (forest(x, y) > 0.4 || R() > 0.25) continue;
+    const m = pick(bare), sc = 0.85 + R()*0.35;
+    if (free(x, y, m.radius*sc, 1.0)) place(m, x, y, sc, m.radius*sc);
   }
-  return out;
-}
-function gatesNear(y, range){
-  const out = [];
-  for (let k = Math.floor((y-range)/CELL); k <= Math.floor((y+range)/CELL); k++){
-    const c = cellData(k); if (c.gate) out.push(c.gate);
+  function outcrop(x, y){                                    // a boulder with smaller rocks around it
+    const m = pick(big), sc = 0.75 + R()*0.45;
+    if (!free(x, y, m.base*sc, 1.0)) return;
+    place(m, x, y, sc, m.base*sc);
+    for (let k = 2 + Math.floor(R()*4); k > 0; k--){
+      const a = R()*Math.PI*2, d = m.base*sc + 0.4 + R()*2.2, xx = x + Math.cos(a)*d, yy = y + Math.sin(a)*d;
+      const m2 = pick(R() < 0.6 ? small : mid), sc2 = 0.8 + R()*0.5;
+      if (-bankDist(xx, yy) > 1 && free(xx, yy, m2.base*sc2, 1.0)) place(m2, xx, yy, sc2, m2.base*sc2);
+    }
   }
-  return out;
+  for (let t=0;t<170;t++){ const [x, y] = landPt(7, 60); if (-bankDist(x, y) > 7 && R() < 0.55) outcrop(x, y); }
+  for (let t=0;t<3;t++){ const [x, y] = islandPt(); if (-bankDist(x, y) > 4) outcrop(x, y); }
+  function bushes(n, pt){
+    for (let t=0;t<n;t++){
+      const [x, y] = pt(); if (-bankDist(x, y) < 1.4) continue;
+      const edge = 1 - Math.abs(forest(x, y) - 0.45)/0.18;
+      if (R() > Math.max(0.06, Math.min(1, edge))*0.75) continue;
+      const set = bushSets[Math.min(3, Math.floor(vnoise2(x*0.03, y*0.03 + 90, 77)*4))];
+      const m = pick(set), sc = 0.8 + R()*0.5;
+      if (free(x, y, m.radius*sc, 0.9)) place(m, x, y, sc, m.radius*sc);
+    }
+  }
+  bushes(9000, () => landPt(1.4, 62)); bushes(500, islandPt);
+  const rockyShore = (x, y) => vnoise2(x*0.05 + 11, y*0.05 - 4, 31) > 0.56;
+  for (let t=0;t<2600;t++){                                  // beach stones, mostly on rocky stretches
+    const [x, y] = t < 2200 ? landPt(0.2, 3.2) : islandPt(); const s = -bankDist(x, y);
+    if (s < 0.15 || s > 3.4 || R() > (rockyShore(x, y) ? 0.7 : 0.12)) continue;
+    const m = pick(R() < 0.75 ? small : mid), sc = 0.8 + R()*0.5;
+    if (free(x, y, m.base*sc, 1.0)) place(m, x, y, sc, m.base*sc);
+  }
+  for (let t=0;t<1500;t++){                                  // rocks in the shallows: solid, rocky shores only
+    const th = R()*Math.PI*2, outer = R() < 0.82, dw = 0.7 + R()*2.4;
+    const r = outer ? outerR(th) - dw/0.9 : islandR(th) + dw/0.9, x = Math.cos(th)*r, y = Math.sin(th)*r;
+    const d = bankDist(x, y); if (d < 0.5 || d > 3.2 || !rockyShore(x, y) || R() > 0.5) continue;
+    if (nearSpawnOrGate(x, y, 10)) continue;
+    const m = pick(R() < 0.55 ? mid : small), sc = 0.9 + R()*0.45;
+    if (!free(x, y, m.base*sc, 1.05)) continue;
+    const p = place(m, x, y, sc, m.base*sc, -0.12 - R()*0.25);
+    gridAdd(obsGrid, { x, y, r: m.base*sc*0.85, rock: true, seed: R(), prop: p });
+  }
+  for (const p of props.slice()){                            // grass tufts at the feet of trees and rocks
+    if (p.z < 0 || R() > 0.4) continue;
+    for (let k = 1 + Math.floor(R()*3); k > 0; k--){
+      const a = R()*Math.PI*2, d = (p.m.base*p.s) + 0.3 + R()*1.6, x = p.x + Math.cos(a)*d, y = p.y + Math.sin(a)*d;
+      const m = pick(grass), sc = 0.8 + R()*0.5;
+      if (-bankDist(x, y) > 1.2 && free(x, y, m.base*sc, 0.6)) place(m, x, y, sc, m.base*sc*0.6);
+    }
+  }
 }
+generateGates();
 
 /* ======================================================================
    WebGL setup
@@ -234,6 +349,59 @@ float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
 float fbm(vec2 p){ float v=0.0,a=0.5; for(int i=0;i<3;i++){ v+=a*vnoise(p); p=p*2.03+vec2(17.1,9.7); a*=0.5; } return v; }
 `;
 
+// Camera: tilted 30 degrees from straight down so the 3D models read as trees, not blobs.
+const TILT = 30*Math.PI/180, SIN_T = Math.sin(TILT), COS_T = Math.cos(TILT);
+
+// Scene light from the dynamic sky: direction toward the sun (or moon), its color, sky ambient.
+const LIGHT_GLSL = `
+uniform vec3 uLightDir, uLightCol, uAmbient;
+vec3 groundShade(){ return pow(uAmbient + uLightCol*max(uLightDir.z, 0.0), vec3(0.4545)); }`;
+// Cloud layers from the sky pack (cloud_tex_01 and 02, density 0.7, shape exponent 2), used for
+// shadows that drift over the lake and the sky reflected in the water.
+const CLOUD_GLSL = `
+uniform sampler2D uCloud1, uCloud2;
+uniform float uSkyClock, uDay; uniform vec2 uCloudWind;
+float cloudH(sampler2D t, vec2 uv){ float h = texture(t, uv).r; h = clamp((h - 0.3)/0.7, 0.0, 1.0); return h*h; }
+float cloudAt(vec2 p){ vec2 w = uCloudWind*uSkyClock*0.1; float a = cloudH(uCloud1, p*0.0035 + w*0.02), b = cloudH(uCloud2, p*0.0035 + w*0.01); return min(a, a*b); }
+float cloudShade(vec2 p){ return 1.0 - 0.5*min(cloudAt(p)*2.5, 1.0)*uDay; }`;
+// Port of the supplied Godot sky shader (shader_type sky). dir uses Godot axes, y up.
+const SKY_GLSL = `
+uniform sampler2D uStars, uNight2; uniform vec3 uSunG; uniform float uBlend;
+const vec3 SKY_DAY = vec3(0.0,0.3,0.7), HORIZON_DAY = vec3(0.75,0.85,0.85), HORIZON_SUNSET = vec3(0.9,0.4,0.1);
+const vec3 SKY_SUNSET = vec3(0.15,0.2,0.4), HORIZON_NIGHT = vec3(0.1,0.15,0.2), SKY_NIGHT = vec3(0.05,0.10,0.15);
+const vec3 CLOUD_COLOR = vec3(0.8), SUN_COLOR = vec3(1.0,0.9,0.0), MOON_COLOR = vec3(0.5,0.55,0.7);
+const float HORIZON_EXPONENT = 2.0, CLOUD_DEPTH = 2.0, CLOUD_OCCLUDE = 1.0;
+const float SUN_SCALE = 0.05, SUN_STRENGTH = 15.0, MOON_SCALE = 0.03, MOON_STRENGTH = 15.0;
+vec3 skyColor(vec3 dir){
+  float t = 1.0/max(dir.y, 1e-3), blend = uBlend, cloud = 0.0;
+  if (dir.y > 0.0){
+    vec3 wind = vec3(uCloudWind.x, 0.0, uCloudWind.y)*uSkyClock*0.1, tiling = vec3(0.2);
+    vec3 p1 = dir*t*tiling + wind, p2 = dir*t*tiling + wind*0.5;
+    float h1 = cloudH(uCloud1, p1.xz), h2 = cloudH(uCloud2, p2.xz);
+    p1 += dir*h1*CLOUD_DEPTH*0.1; p2 += dir*h2*CLOUD_DEPTH*0.1;
+    h1 = cloudH(uCloud1, p1.xz); h2 = cloudH(uCloud2, p2.xz);
+    cloud = min(h1, h1*h2)*smoothstep(0.0, 0.2, dir.y);
+  }
+  float sunD = clamp(1.0 - distance(dir, uSunG) - pow(cloud, CLOUD_OCCLUDE), 0.0, 1.0);
+  vec3 sun = SUN_COLOR*SUN_STRENGTH*max(clamp(smoothstep(1.0 - SUN_SCALE, 1.0, sunD), 0.0, 1.0), min(1.0, pow(sunD, 4.0)*0.07));
+  float moonD = clamp(1.0 - distance(dir, -uSunG) - pow(cloud, CLOUD_OCCLUDE*2.0), 0.0, 1.0);
+  vec3 moon = MOON_COLOR*MOON_STRENGTH*max(clamp(smoothstep(1.0 - MOON_SCALE, 1.0, moonD), 0.0, 1.0), min(1.0, pow(moonD, 8.0)*0.07));
+  vec2 suv = (dir/(1.0 - abs(t)*0.05)).xz;
+  float nightNoise = texture(uNight2, suv).r;
+  float stars = smoothstep(0.9, 0.95, texture(uStars, suv).r);
+  stars = clamp(clamp(stars - cloud*2.0, 0.0, 1.0)*min(1.0, -blend), 0.0, 1.0) + nightNoise*0.01;
+  vec3 hor = mix(HORIZON_SUNSET, HORIZON_DAY, clamp(blend, 0.0, 1.0));
+  hor = mix(HORIZON_NIGHT, hor, pow(clamp(1.0 + blend, 0.0, 1.0), 4.0));
+  vec3 sc = mix(SKY_SUNSET, SKY_DAY, clamp(blend, 0.0, 1.0));
+  sc = mix(SKY_NIGHT*(nightNoise*0.5 + 0.5), sc, clamp(pow(1.0 + blend, 4.0), 0.0, 1.0));
+  vec3 sky = mix(sc, hor, pow(1.0 - abs(dir.y), HORIZON_EXPONENT));
+  sky = mix(sky, CLOUD_COLOR*(0.15 + 0.85*uDay), pow(cloud, 0.8));   // clouds dim at night (the original keeps them grey)
+  sky += stars;
+  sky = mix(sky, mix(sc*0.5, hor, dir.y + 1.0), clamp(pow(1.0 - dir.y, 2.0), 0.0, 1.0));
+  sky += (sun + moon)*clamp(pow(dir.y + 1.0, 16.0), 0.0, 1.0);
+  return sky;
+}`;
+
 /* ---------------- wave simulation (GPU, toroidal height field) ----------------
    The height field wraps around a WORLD sized window that follows the boat.
    Each step: advect by the river current, run the 2D wave equation, damp near
@@ -247,7 +415,7 @@ uniform float uN, uWorld, uDt, uC2;
 uniform vec2 uCam;
 uniform vec4 uSrc[${MAX_SRC}];
 uniform int uCount;
-${RIVER_GLSL}
+${WORLD_GLSL}
 void main(){
   vec2 w0 = vUv*uWorld;
   vec2 p = w0 + uWorld*floor((uCam - w0)/uWorld + 0.5);   // copy of this texel nearest the camera
@@ -315,6 +483,9 @@ void main(){
     vec2 F = worley(uv, 6.0);
     float c = 1.0 - smoothstep(0.0, 0.16, F.y - F.x);
     o = vec4(vec3(c*c), 1.0);
+  } else if (uMode == 5){                // inverted cellular noise: bright points for stars
+    vec2 F = worley(uv, uBase);
+    o = vec4(vec3(1.0 - clamp(F.x*1.6, 0.0, 1.0)), 1.0);
   } else if (uMode == 4){                // seamless fractal noise stretched to the full 0 to 1 range (Godot normalize = true)
     o = vec4(vec3(clamp(0.5 + pfbmN(uv, uBase, uOct)*1.55, 0.0, 1.0)), 1.0);
   } else {                               // normal map derived from the wave height texture
@@ -327,34 +498,7 @@ void main(){
 }`;
 
 // Tree canopies and their shadows, shared by the ground, grass and canopy passes.
-const TREES_GLSL = `const vec2 L2T = vec2(-0.55, 0.83);
-vec4 treeLayer(vec2 p, out float shadow){
-  float cs = 2.8; vec2 g = floor(p/cs);
-  vec4 res = vec4(0.0); shadow = 0.0;
-  for (int j=-1;j<=1;j++) for (int i=-1;i<=1;i++){
-    vec2 cell = g + vec2(float(i), float(j));
-    if (hash21(cell+3.3) < 0.32) continue;
-    vec2 h = hash22(cell); float h3 = hash21(cell+7.7);
-    vec2 ctr = (cell + 0.15 + 0.7*h)*cs;
-    float rad = cs*(0.26 + 0.2*h3);
-    if (-bankD(ctr) < 2.2 + rad) continue;
-    float sd = length(p - (ctr + vec2(0.55,-0.7))) - rad;
-    shadow = max(shadow, (1.0 - smoothstep(-0.25, 0.7, sd))*0.5);
-    vec2 off = p - ctr; float dd = length(off);
-    float lump = 1.0 + 0.1*sin(atan(off.y, off.x)*6.0 + h.x*30.0);
-    float cov = 1.0 - smoothstep(rad*lump - 0.07, rad*lump + 0.05, dd);
-    if (cov > 0.0){
-      float lit = clamp(0.55 + 0.5*dot(off/rad, L2T), 0.0, 1.0);
-      float leaf = vnoise(p*6.5 + h*20.0);
-      vec3 dark = mix(vec3(0.07,0.22,0.10), vec3(0.10,0.26,0.10), h3);
-      vec3 light = mix(vec3(0.30,0.55,0.20), vec3(0.42,0.62,0.22), h3);
-      vec3 c = mix(dark, light, lit*(0.7+0.5*leaf));
-      res = vec4(c, cov);
-    }
-  }
-  return res;
-}
-`;
+const TREES_GLSL = '';
 
 /* ---------------- water + banks + trees (one full screen pass) ----------------
    Water is a port of the supplied Godot shaders (water.gdshader and
@@ -374,13 +518,15 @@ const waterFS = `#version 300 es
 precision highp float;
 in vec2 vNdc; out vec4 o;
 uniform vec2 uCam, uHalf;
-uniform float uTime, uWorld, uSimN, uHasSim, uToon;
+uniform float uTime, uWorld, uSimN, uHasSim, uToon, uSinT, uCosT;
 uniform sampler2D uSim, uWave, uWaveN, uFoam, uCaus;
 uniform vec3 uRocks[${MAX_ROCKS}];
 uniform int uRockCount;
-${RIVER_GLSL}
+${WORLD_GLSL}
 ${NOISE_GLSL}
-const vec2 L2 = vec2(-0.55, 0.83);   // direction toward the sun in the ground plane
+${LIGHT_GLSL}
+${CLOUD_GLSL}
+${SKY_GLSL}
 uniform sampler2D uGroundNoise;
 
 // BinbunGrass palette_01.tres: gradient offsets 1/6, 1/2, 5/6
@@ -413,16 +559,18 @@ float waterDepth(vec2 p){
   float D = d < 0.0 ? d : 3.6*pow(min(d/3.5, 1.0), 0.6);   // steep banks, deep channel
   for (int i=0;i<${MAX_ROCKS};i++){
     if (i >= uRockCount) break;
-    D = min(D, (length(p - uRocks[i].xy) - uRocks[i].z)*1.1);
+    D = min(D, (length(p - uRocks[i].xy) - uRocks[i].z)*3.0);
   }
   return D;
 }
 
 // Godot sample_wave(): a second layer distorted by the first. The current carries both.
 vec4 sampleWave(sampler2D tex, vec2 p, vec2 disp, vec2 jit){
-  vec2 uv1 = (p - disp*1.15)*WAVE_SCALE*WAVE_LAYER_SCALE - uTime*WAVE_VELOCITY + jit*1.7;
+  // the two layers are turned against each other so the tile never lines up on open water
+  const mat2 ROT1 = mat2(0.766, 0.643, -0.643, 0.766), ROT2 = mat2(0.956, -0.292, 0.292, 0.956);
+  vec2 uv1 = ROT1*(p - disp*1.15)*WAVE_SCALE*WAVE_LAYER_SCALE - uTime*WAVE_VELOCITY + jit*1.7;
   float w1 = textureLod(tex, uv1, WAVE_SOFTNESS).r;
-  vec2 uv2 = (p - disp)*WAVE_SCALE + uTime*WAVE_VELOCITY + jit;
+  vec2 uv2 = ROT2*(p - disp)*WAVE_SCALE*0.87 + uTime*WAVE_VELOCITY + jit;
   return textureLod(tex, uv2 - w1*0.1, WAVE_SOFTNESS);
 }
 vec3 sampleCaustics(vec2 uv){
@@ -442,19 +590,18 @@ vec3 bedColor(vec2 q){
   for (int i=0;i<${MAX_ROCKS};i++){
     if (i >= uRockCount) break;
     float rd = length(q - uRocks[i].xy) - uRocks[i].z;
-    c = mix(c, vec3(0.30,0.30,0.28), (1.0 - smoothstep(0.0, 0.7, rd))*0.7);
+    c = mix(c, vec3(0.30,0.30,0.28), (1.0 - smoothstep(0.0, 0.35, rd))*0.7);
   }
   return toLinear(c*(0.85 + 0.25*n2));
 }
 
-${TREES_GLSL}
 float stepped(float v, float steps, float smoothness){
   float m = v*steps, b = floor(m);
   return (b + smoothstep(0.5 - smoothness*0.5, 0.5 + smoothness*0.5, m - b))/steps;
 }
 
 void main(){
-  vec2 p = uCam + vNdc*uHalf;
+  vec2 p = uCam + vec2(vNdc.x*uHalf.x, vNdc.y*uHalf.y/uCosT);   // ground point under this pixel (tilted camera)
   float d = bankD(p);
   vec3 col;
 
@@ -501,7 +648,8 @@ void main(){
 
     /* ---- foam ---- */
     float edgeFoam = clamp((EDGE_FOAM_DEPTH_SIZE - D)/EDGE_FOAM_DEPTH_SIZE, 0.0, 1.0);
-    float foam = max(edgeFoam, wave*WAVE_FOAM_AMOUNT);
+    float gust = 0.45 + 0.75*fbm(p*0.025 + vec2(uTime*0.01, -uTime*0.006));   // wind gusts: whitecaps come in patches
+    float foam = max(edgeFoam, wave*WAVE_FOAM_AMOUNT*gust);
     float fA = texture(uFoam, (p - d0)*0.5).r, fB = texture(uFoam, (p - d1)*0.5 + j1).r;
     float foamShape = 1.0 - clamp(0.5 + ((fA*w0 + fB*w1) - 0.5)*vn, 0.0, 1.0);
     foam = clamp((foam - FOAM_START)/(FOAM_END - FOAM_START), 0.0, 1.0);
@@ -516,9 +664,9 @@ void main(){
     color = mix(color, surf, wave*WAVE_HIGHLIGHT);
     color = mix(color, foamC, foam);
 
-    /* ---- lighting ---- */
+    /* ---- lighting from the dynamic sky ---- */
     vec3 N = normalize(vec3(nmap.xy - simG*1.2, nmap.z));
-    vec3 L = normalize(vec3(L2*0.45, 0.89)), V = vec3(0.0, 0.0, 1.0), H = normalize(L + V);
+    vec3 L = uLightDir, V = vec3(0.0, -uSinT, uCosT), H = normalize(L + V);
     float rough = mix(SURFACE_ROUGHNESS, FOAM_ROUGHNESS, foam);
     float ndl = dot(N, L), ndh = clamp(dot(N, H), 0.0, 1.0);
     vec3 lit;
@@ -529,16 +677,20 @@ void main(){
       float sp = clamp(pow(ndh, 16.0/r), 0.1, 0.99);
       sp = mix(pow(sp, 2.0 - r), 0.0, pow(r, 0.1));
       sp = stepped(sp, SPECULAR_STEPS, SPECULAR_SMOOTHNESS);
-      lit = color*(0.22 + (1.0 + color/PI)*l) + (PI + color)*sp*0.5;
+      lit = color*(uAmbient + (1.0 + color/PI)*l*uLightCol) + (PI + color)*sp*0.5*uLightCol;
     } else {
       // water.gdshader uses Godot's standard lighting: Lambert plus GGX specular
       float a = max(rough*rough, 0.0025), a2 = a*a;
       float dd = ndh*ndh*(a2 - 1.0) + 1.0;
-      float D_ggx = a2/(PI*dd*dd);
-      float F = 0.04 + 0.96*pow(1.0 - clamp(dot(H, V), 0.0, 1.0), 5.0);
-      float spec = min(D_ggx*F*0.25*max(ndl, 0.0), 6.0);
-      lit = color*(0.22 + 0.85*max(ndl, 0.0)) + vec3(1.0, 0.97, 0.9)*spec + toLinear(vec3(0.55,0.75,0.95))*0.04;
+      float spec = min(a2/(PI*dd*dd)*(0.04 + 0.96*pow(1.0 - clamp(dot(H, V), 0.0, 1.0), 5.0))*0.25*max(ndl, 0.0), 6.0);
+      lit = color*(uAmbient + 1.1*max(ndl, 0.0)*uLightCol) + uLightCol*spec;
     }
+    // the sky (sun, moon, stars, clouds) reflected in the lake
+    vec3 R = reflect(-V, N);
+    vec3 skyR = skyColor(vec3(R.x, R.z, -R.y));
+    float F = 0.02 + 0.98*pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
+    lit = mix(lit, toLinear(min(skyR, vec3(1.0))), 0.12 + F*0.8) + toLinear(min(max(skyR - 1.0, 0.0), vec3(4.0)))*0.2;
+    lit *= cloudShade(p);
     col = toSrgb(lit);
   }
 
@@ -551,8 +703,7 @@ void main(){
     vec3 grass = palette(texture(uGroundNoise, p*0.1).r);            // ground.gdshader
     float gm = smoothstep(1.0, 2.3, bd + (n1-0.5)*1.7);
     vec3 land = mix(sand, grass, gm);
-    float shadow = 0.0; treeLayer(p, shadow);
-    land *= 1.0 - shadow;
+    land *= groundShade()*cloudShade(p);
     float landMask = smoothstep(0.06, -0.06, d);
     col = d <= -0.3 ? land : mix(col, land, landMask);
   }
@@ -570,17 +721,17 @@ void main(){
      - Billboards face the camera; here they stand up the screen.
      - Wind is off in the supplied material (velocity 0, 0); a light breeze is on here.
      - Clumps under tree shadow are darkened like the ground beneath them.  */
-const GRASS_CELL = 0.25;
+const GRASS_CELL = 0.3;
 const grassVS = `#version 300 es
 precision highp float;
 uniform vec2 uCam, uHalf, uWindVel;
+uniform float uCosT;
 uniform ivec2 uOrigin; uniform int uCols;
 uniform float uCell, uTime, uRandomVariation;
 uniform sampler2D uGroundNoise, uWind;
 out vec2 vUv; out vec2 vColorPos; out float vShade; flat out int vId;
-${RIVER_GLSL}
+${WORLD_GLSL}
 ${NOISE_GLSL}
-${TREES_GLSL}
 void main(){
   int col = gl_InstanceID % uCols, row = gl_InstanceID / uCols;
   ivec2 cell = ivec2(uOrigin.x + col, uOrigin.y - row);     // rows run north to south: painter's order
@@ -604,18 +755,19 @@ void main(){
   world += wn*uWindVel*0.25*pow(1.0 - vUv.y, 2.0)*scale;
 
   vColorPos = vec2(base.x + (corner.x - 0.5)*size, base.y); // the clump's own ground position, as Godot sees world_pos.xz
-  float shadow = 0.0; treeLayer(base, shadow);
-  vShade = 1.0 - shadow;
+  vShade = 1.0;
   int id = int(hash21(c + 2.2)*1024.0);
   vId = id;
   if (hash21(vec2(float(id), 1.0)) < uRandomVariation) vShade = -vShade;   // flag for the random lighter clump
-  gl_Position = scale > 0.0 ? vec4((world - uCam)/uHalf, 0.0, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+  gl_Position = scale > 0.0 ? vec4((world.x - uCam.x)/uHalf.x, (world.y - uCam.y)*uCosT/uHalf.y, 0.0, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
 }`;
 const grassFS = `#version 300 es
 precision highp float;
 in vec2 vUv; in vec2 vColorPos; in float vShade; flat in int vId; out vec4 o;
 uniform sampler2D uAtlas, uGroundNoise;
 uniform float uCutStart, uCutEnd;
+${LIGHT_GLSL}
+${CLOUD_GLSL}
 const vec3 PAL0 = vec3(0.658824, 0.792157, 0.345098), PAL1 = vec3(0.458824, 0.654902, 0.262745), PAL2 = vec3(0.274510, 0.509804, 0.196078);
 vec3 palette(float t){
   if (t <= 0.166667) return PAL0;
@@ -637,26 +789,12 @@ void main(){
   float shape = texture(uAtlas, atlasUv(vUv, vId, 2)).r;
   float noiseValue = texture(uGroundNoise, vColorPos*0.1).r;
   if (vShade < 0.0) noiseValue += 0.4;
-  vec3 color = palette(noiseValue)*abs(vShade);
+  vec3 color = palette(noiseValue)*abs(vShade)*groundShade()*cloudShade(vColorPos);
   // alpha_mode Dithered with alpha_cut 0.4 to 0.6, as in grass_01.tres
   float alpha = clamp((shape - uCutStart)/(uCutEnd - uCutStart), 0.0, 1.0);
   alpha = step(bayer4(gl_FragCoord.xy) + 0.01, alpha);
   if (alpha < 0.1) discard;
   o = vec4(color, 1.0);
-}`;
-const canopyFS = `#version 300 es
-precision highp float;
-in vec2 vNdc; out vec4 o;
-uniform vec2 uCam, uHalf;
-${RIVER_GLSL}
-${NOISE_GLSL}
-${TREES_GLSL}
-void main(){
-  vec2 p = uCam + vNdc*uHalf;
-  if (bankD(p) > -1.5) discard;
-  float shadow; vec4 tree = treeLayer(p, shadow);
-  if (tree.a <= 0.0) discard;
-  o = vec4(tree.rgb*(1.0 - 0.28*dot(vNdc, vNdc)*0.5), tree.a);
 }`;
 const GRASS_ATLAS_PNG = 'data:image/png;base64,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'; // grass_basic_atlas.png, 128 px grayscale copy
 
@@ -664,16 +802,20 @@ const GRASS_ATLAS_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACAC
 const SPR_VS = `#version 300 es
 precision highp float;
 in vec2 aWorld; in vec2 aLocal; in vec4 aP; in vec4 aQ;
-uniform vec2 uCam, uHalf;
+uniform vec2 uCam, uHalf; uniform float uCosT;
 out vec2 vLocal; out vec4 vP; out vec4 vQ;
-void main(){ vLocal=aLocal; vP=aP; vQ=aQ; gl_Position=vec4((aWorld-uCam)/uHalf, 0.0, 1.0); }`;
+void main(){ vLocal=aLocal; vP=aP; vQ=aQ; gl_Position=vec4((aWorld.x-uCam.x)/uHalf.x, (aWorld.y-uCam.y)*uCosT/uHalf.y, 0.0, 1.0); }`;
 
 const SPR_FS = `#version 300 es
 precision highp float;
 in vec2 vLocal; in vec4 vP; in vec4 vQ; out vec4 o;
-uniform float uTime;
+uniform float uTime; uniform vec3 uLitS; uniform sampler2D uNoise;
 ${NOISE_GLSL}
 const vec2 LW = vec2(-0.55, 0.83);
+// Beam VFX pack (BinbunVFX beam_core, beam_outer, beam_flare, beam_ball, glow_particle) as thruster jets.
+const vec3 BEAM_PRIMARY = vec3(0.85, 0.97, 1.0), BEAM_SECONDARY = vec3(0.25, 0.7, 1.0), BEAM_TERTIARY = vec3(0.1, 0.35, 1.0);
+const float BEAM_EMISSION = 3.0, BEAM_LENGTH = 4.0, NOISE_TWIST = 1.0, EDGE_SOFTNESS = 0.5, BEAM_GAIN = 0.3;
+float overlay(float base, float blend){ float limit = step(0.5, base); return mix(2.0*base*blend, 1.0 - 2.0*(1.0 - base)*(1.0 - blend), limit); }
 
 float sdBox(vec2 p, vec2 b){ vec2 d=abs(p)-b; return length(max(d,0.0))+min(max(d.x,d.y),0.0); }
 float hullW(float y){
@@ -709,7 +851,7 @@ void main(){
       tail = exp(-pow(across/wdt, 2.0)) * exp(-along/(rr*2.6+0.6)) * smoothstep(rr*0.6, rr*1.3, along);
       tail *= 0.35 + 0.65*vnoise(vec2(across*2.2, along*0.9 - uTime*2.0));
     }
-    float a = clamp((ring*0.25*(0.55+0.7*n) + tail*0.7), 0.0, 1.0) * vQ.w;   // edge foam comes from the water shader now
+    float a = clamp(tail*0.5, 0.0, 1.0) * vQ.w;   // the collar comes from the water shader's edge foam; this is the wake behind the rock
     res = vec4(0.96, 0.99, 1.0, a*0.85);
 
   } else if (type == 2){                                    // rock
@@ -774,10 +916,16 @@ void main(){
       float hl = 1.0 - smoothstep(-aa, aa, length(q - vec2(-0.04,0.01)) - 0.05);
       c = mix(c, vec3(0.55,0.65,0.85), hl*hd);
       float alpha = body;
-      // outboard motor, angled with the rudder
-      vec2 mp = rot(q - vec2(0.0,-1.18), steer*0.55);
-      float mot = 1.0 - smoothstep(-aa, aa, sdBox(mp - vec2(0.0,-0.18), vec2(0.13, 0.30)));
-      vec3 mc = mix(vec3(0.16,0.18,0.21), vec3(0.34,0.37,0.42), smoothstep(-0.13, 0.13, mp.x));
+      // twin thruster pods, gimballed with the rudder; the beams are drawn in the glow pass
+      float mot = 0.0; vec3 mc = vec3(0.0);
+      for (int k=0;k<2;k++){
+        vec2 mp = rot(q - vec2(k == 0 ? -0.32 : 0.32, -1.12), steer*0.3);
+        float pod = 1.0 - smoothstep(-aa, aa, sdBox(mp - vec2(0.0, -0.06), vec2(0.11, 0.22)));
+        float ring = 1.0 - smoothstep(-aa, aa, sdBox(mp - vec2(0.0, -0.27), vec2(0.12, 0.035)));
+        vec3 pc = mix(vec3(0.16,0.18,0.21), vec3(0.36,0.40,0.46), smoothstep(-0.11, 0.11, mp.x));
+        pc = mix(pc, BEAM_SECONDARY, ring*0.85);
+        mc = mix(mc, pc, max(pod, ring)); mot = max(mot, max(pod, ring));
+      }
       c = mix(c, mc, mot); alpha = max(alpha, mot);
       c = mix(c, vec3(1.0,0.25,0.15), clamp(flash,0.0,1.0)*0.55);
       res = vec4(c, alpha);
@@ -788,17 +936,109 @@ void main(){
     float n = vnoise(q*5.0/vQ.x + seed*20.0);
     float a = (1.0 - smoothstep(0.35, 1.0, r)) * (0.45 + 0.7*n) * vQ.z;
     res = vec4(0.97, 0.99, 1.0, clamp(a, 0.0, 1.0));
+
+  /* ---- additive glow types: output is premultiplied color ---- */
+  } else if (type == 7){                                    // beam: beam_core inside beam_outer
+    float L = vQ.x, open = vQ.y;
+    float v = clamp((L*0.5 - q.y)/L, 0.0, 1.0);             // 0 at the nozzle, 1 at the tip
+    float taper = mix(1.0, 0.6, v);
+    float rOut = 0.125*taper, rCore = 0.08*taper;
+    float openMask = 1.0 - smoothstep(open - 0.1, open + 0.1, v);
+    float ao = clamp(q.x/rOut, -1.0, 1.0);
+    vec2 nuv = vec2(asin(ao)/6.2832 + 0.25, v*BEAM_LENGTH);
+    nuv.x += v*NOISE_TWIST; nuv -= vec2(uTime)*vec2(0.0, 2.0);
+    float nz = texture(uNoise, nuv).r;
+    vec3 outer = mix(BEAM_PRIMARY, BEAM_SECONDARY, pow(nz, 0.5))*BEAM_EMISSION;
+    float oa = smoothstep(0.7 - EDGE_SOFTNESS*0.7, 0.7 + EDGE_SOFTNESS*0.3, nz*openMask)*(1.0 - smoothstep(rOut - aa, rOut + aa, abs(q.x)));
+    float ac = abs(q.x)/rCore, fres = sqrt(max(1.0 - ac*ac, 0.0));
+    vec3 core = mix(BEAM_PRIMARY, BEAM_PRIMARY*BEAM_EMISSION, fres);
+    float ca = (1.0 - smoothstep(rCore - aa, rCore + aa, abs(q.x)))*openMask*(0.35 + 0.65*fres);
+    res = vec4((outer*oa*0.6 + core*ca*0.55)*BEAM_GAIN, 1.0);
+  } else if (type == 8){                                    // beam_flare: short noisy cone at the nozzle
+    float open = vQ.y;
+    float v = clamp(0.5 - q.y, 0.0, 1.0), rr = mix(0.13, 0.22, v);
+    vec2 uv = vec2(asin(clamp(q.x/rr, -1.0, 1.0))/6.2832 + 0.25, v) - vec2(uTime)*vec2(0.0, 2.0)*0.5;
+    float value = overlay(1.0 - v*3.0, texture(uNoise, uv).r);
+    vec3 fc = mix(BEAM_SECONDARY, BEAM_TERTIARY, pow(max(value, 0.0), 2.0))*BEAM_EMISSION;
+    float fa = smoothstep(0.7 - EDGE_SOFTNESS*0.7, 0.7 + EDGE_SOFTNESS*0.3, value);
+    fa *= clamp(1.0 - smoothstep(pow(open, 2.0), pow(open, 0.8), v*2.4), 0.0, 1.0)*(1.0 - smoothstep(rr - aa, rr + aa, abs(q.x)));
+    res = vec4(fc*fa*BEAM_GAIN, 1.0);
+  } else if (type == 9){                                    // beam_ball at the nozzle
+    float rb = 0.08 + 0.06*vQ.x;
+    float ba = 1.0 - smoothstep(rb - aa, rb + aa, length(q));
+    res = vec4(BEAM_TERTIARY*BEAM_EMISSION*ba*BEAM_GAIN*(0.5 + 0.5*vQ.x) + BEAM_PRIMARY*ba*0.2, 1.0);
+  } else if (type == 10){                                   // glow_particle sparks
+    float ga = (1.0 - smoothstep(0.02, 0.07, length(q)))*vQ.x;
+    res = vec4(BEAM_TERTIARY*BEAM_EMISSION*5.0*ga*0.05 + BEAM_PRIMARY*ga*0.25, 1.0);
+  } else if (type == 11){                                   // light the jets cast on the water (stronger at night)
+    vec2 n = q/vQ.xy; float f = max(0.0, 1.0 - dot(n, n));
+    res = vec4(BEAM_SECONDARY*f*f*vQ.z*vQ.w*0.3, 1.0);
+  } else if (type == 12){                                   // the next gate: a pulsing dashed line between its buoys
+    float line = exp(-pow(q.y/0.07, 2.0)), dash = step(0.45, fract(q.x*1.2 - uTime*1.5));
+    res = vec4(vec3(1.0, 0.85, 0.4)*line*dash*(0.55 + 0.45*sin(uTime*4.0))*0.6, 1.0);
   }
-  o = res;
+  o = type >= 7 ? res : vec4(res.rgb*uLitS, res.a);
 }`;
+
+/* ---------------- KayKit meshes (CC0, Kay Lousberg) ----------------
+   Instanced, lit by the dynamic sky, with planar shadows rendered into a
+   shadow buffer and multiplied over the ground, water, grass and boat.   */
+const MESH_VS = `#version 300 es
+precision highp float;
+in vec3 aPos; in vec3 aNrm; in vec2 aUv;
+in vec4 iA;          // x, y, z, rotation
+in vec2 iB;          // scale, tint
+uniform vec2 uCam, uHalf; uniform float uSinT, uCosT, uTime, uShadow;
+uniform vec3 uLightDir;
+out vec2 vUv; out vec3 vN; out vec3 vW; out float vTint;
+void main(){
+  float c = cos(iA.w), s = sin(iA.w);
+  vec3 p = aPos*iB.x;
+  p.x += sin(uTime*1.3 + iA.x*0.37 + iA.y*0.21)*0.03*max(p.z - 0.8, 0.0);    // breeze in the canopy
+  vec3 w = vec3(iA.x + c*p.x - s*p.y, iA.y + s*p.x + c*p.y, iA.z + p.z);
+  vN = vec3(c*aNrm.x - s*aNrm.y, s*aNrm.x + c*aNrm.y, aNrm.z);
+  vUv = aUv; vW = w; vTint = iB.y;
+  if (uShadow > 0.5){                                          // flatten onto the ground along the light
+    float lz = max(uLightDir.z, 0.35);
+    vec2 g = w.xy - uLightDir.xy/lz*max(w.z, 0.0);
+    gl_Position = vec4((g.x - uCam.x)/uHalf.x, (g.y - uCam.y)*uCosT/uHalf.y, 0.0, 1.0);
+  } else {
+    float depth = ((w.y - uCam.y)*uSinT - w.z*uCosT)/400.0;
+    gl_Position = vec4((w.x - uCam.x)/uHalf.x, ((w.y - uCam.y)*uCosT + w.z*uSinT)/uHalf.y, depth, 1.0);
+  }
+}`;
+const MESH_FS = `#version 300 es
+precision highp float;
+in vec2 vUv; in vec3 vN; in vec3 vW; in float vTint; out vec4 o;
+uniform sampler2D uTex; uniform float uShadow, uShadowStrength;
+${WORLD_GLSL}
+${LIGHT_GLSL}
+${CLOUD_GLSL}
+void main(){
+  if (vW.z < -0.02 && bankD(vW.xy) > -0.2) discard;          // the part of a rock below the waterline
+  if (uShadow > 0.5){ o = vec4(uShadowStrength); return; }
+  vec3 n = normalize(vN);
+  vec3 base = texture(uTex, vUv).rgb*vTint;
+  float ndl = max(dot(n, uLightDir), 0.0);
+  vec3 light = uAmbient*(0.65 + 0.35*n.z) + uLightCol*ndl*1.15;
+  vec3 col = base*pow(light, vec3(0.4545))*cloudShade(vW.xy);
+  if (vW.z < 0.3 && bankD(vW.xy) > -0.6) col *= mix(0.68, 1.0, smoothstep(-0.02, 0.3, vW.z));   // wet at the waterline
+  o = vec4(col, 1.0);
+}`;
+const COMPOSITE_FS = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o; uniform sampler2D uShadowTex;
+void main(){ o = vec4(vec3(1.0 - texture(uShadowTex, vUv).r), 1.0); }`;
 
 /* ---------- programs, buffers ---------- */
 const simProg   = makeProgram(FULLSCREEN_VS, simFS);
 const waterProg = makeProgram(FULLSCREEN_VS, waterFS);
 const sprProg   = makeProgram(SPR_VS, SPR_FS);
 const genProg   = makeProgram(FULLSCREEN_VS, genFS);
+const meshProg  = makeProgram(MESH_VS, MESH_FS);
+const compProg  = makeProgram(FULLSCREEN_VS, COMPOSITE_FS);
 const grassProg = makeProgram(grassVS, grassFS);
-const canopyProg = makeProgram(FULLSCREEN_VS, canopyFS);
+
 
 const emptyVao = gl.createVertexArray();
 
@@ -855,6 +1095,12 @@ const causTex     = makeWaterTexture(2, 3.0);
 // and wind noise (simplex, 3 octaves, about 10 features per tile).
 const groundNoiseTex = makeWaterTexture(4, 6.0, null, 4, 5);
 const windNoiseTex   = makeWaterTexture(4, 9.0, null, 10, 3);
+// Sky pack noise resources: clouds_01 (simplex, 6 octaves), clouds_02 (perlin, 8 octaves),
+// stars from inverted cellular noise (clouds_04) and a soft night variation (clouds_05).
+const cloudTex1 = makeWaterTexture(4, 4.0, null, 6, 6);
+const cloudTex2 = makeWaterTexture(4, 5.0, null, 5, 6);
+const starTex   = makeWaterTexture(5, 11.0, null, 48, 1);
+const night2Tex = makeWaterTexture(4, 12.0, null, 3, 2);
 const grassAtlas = gl.createTexture();
 gl.bindTexture(gl.TEXTURE_2D, grassAtlas);
 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
@@ -877,7 +1123,7 @@ let toonWater = false;
 try { toonWater = new URLSearchParams(location.search).get('water') === 'toon' || localStorage.getItem('riverrun.water') === 'toon'; } catch(e) {}
 
 // sprite batch
-const MAX_SPRITES = 700, FLOATS = 12;
+const MAX_SPRITES = 1200, FLOATS = 12;
 const sprData = new Float32Array(MAX_SPRITES*6*FLOATS);
 let sprCount = 0;
 const sprVao = gl.createVertexArray(), sprBuf = gl.createBuffer();
@@ -889,10 +1135,11 @@ gl.bufferData(gl.ARRAY_BUFFER, sprData.byteLength, gl.DYNAMIC_DRAW);
 });
 gl.bindVertexArray(null);
 
-function pushSprite(x, y, half, theta, type, seed, q0, q1, q2, q3){
+const pushSprite = (x, y, half, theta, type, seed, q0, q1, q2, q3) => pushQuad(x, y, half, half, theta, type, seed, q0, q1, q2, q3);
+function pushQuad(x, y, hx, hy, theta, type, seed, q0, q1, q2, q3){
   if (sprCount >= MAX_SPRITES) return;
   const c = Math.cos(theta), s = Math.sin(theta);
-  const corners = [[-half,-half],[half,-half],[half,half],[-half,-half],[half,half],[-half,half]];
+  const corners = [[-hx,-hy],[hx,-hy],[hx,hy],[-hx,-hy],[hx,hy],[-hx,hy]];
   let o = sprCount*6*FLOATS;
   for (const [lx,ly] of corners){
     sprData[o++] = x + lx*c - ly*s; sprData[o++] = y + lx*s + ly*c;
@@ -903,13 +1150,155 @@ function pushSprite(x, y, half, theta, type, seed, q0, q1, q2, q3){
   sprCount++;
 }
 
+let nature = null, natureReady = false;
+const MAX_INST = 9000, instData = new Float32Array(MAX_INST*6), instBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferData(gl.ARRAY_BUFFER, instData.byteLength, gl.DYNAMIC_DRAW);
+async function loadNature(){
+  try {
+    const [meta, buf] = await Promise.all([fetch('assets/nature.json').then(r => r.json()), fetch('assets/nature.bin').then(r => r.arrayBuffer())]);
+    const img = await new Promise((ok, bad) => { const im = new Image(); im.onload = () => ok(im); im.onerror = bad; im.src = 'assets/forest_texture.png'; });
+    const nv = meta.models.reduce((a, m) => a + m.verts, 0), ni = meta.models.reduce((a, m) => a + m.indices, 0);
+    const V = new Float32Array(nv*8), I = new Uint16Array(ni), models = [];
+    let vo = 0, io = 0;
+    meta.models.forEach((m, id) => {
+      const Pq = new Int16Array(buf, m.pos, m.verts*3), Nq = new Int8Array(buf, m.nrm, m.verts*3), Uq = new Uint16Array(buf, m.uv, m.verts*2);
+      for (let k=0;k<m.verts;k++){
+        const o = (vo + k)*8;
+        V[o] = Pq[k*3]*m.q; V[o+1] = Pq[k*3+1]*m.q; V[o+2] = Pq[k*3+2]*m.q;
+        V[o+3] = Nq[k*3]/127; V[o+4] = Nq[k*3+1]/127; V[o+5] = Nq[k*3+2]/127;
+        V[o+6] = Uq[k*2]/65535; V[o+7] = Uq[k*2+1]/65535;
+      }
+      I.set(new Uint16Array(buf, m.idx, m.indices), io);
+      models.push(Object.assign({}, m, { id, vstart: vo, istart: io }));
+      vo += m.verts; io += m.indices;
+    });
+    const vbo = gl.createBuffer(), ibo = gl.createBuffer();
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, V, gl.STATIC_DRAW);
+    const loc = n => gl.getAttribLocation(meshProg, n);
+    const aPos = loc('aPos'), aNrm = loc('aNrm'), aUv = loc('aUv'), iA = loc('iA'), iB = loc('iB');
+    for (const m of models){
+      m.vao = gl.createVertexArray(); gl.bindVertexArray(m.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 32, m.vstart*32);
+      gl.enableVertexAttribArray(aNrm); gl.vertexAttribPointer(aNrm, 3, gl.FLOAT, false, 32, m.vstart*32 + 12);
+      gl.enableVertexAttribArray(aUv);  gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 32, m.vstart*32 + 24);
+      gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+      gl.enableVertexAttribArray(iA); gl.vertexAttribDivisor(iA, 1);
+      gl.enableVertexAttribArray(iB); gl.vertexAttribDivisor(iB, 1);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    }
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, I, gl.STATIC_DRAW);
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img); gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    nature = { models, tex, iA, iB };
+    generateProps(models);
+  } catch(e){ console.error('Nature pack failed to load', e); }
+  natureReady = true;
+  const go = document.getElementById('go'); if (go) go.textContent = 'Press any movement key to launch';
+}
+function drawMeshes(shadowPass, camX, camY, halfX, halfY){
+  if (!nature) return;
+  const gy = halfY/COS_T, m = shadowPass ? 30 : 4;
+  const vis = gridQuery(propGrid, camX - halfX - m, camY - gy - m - 12, camX + halfX + m, camY + gy + m, []);
+  const buckets = new Map();
+  for (const p of vis){ let a = buckets.get(p.m.id); if (!a) buckets.set(p.m.id, a = []); a.push(p); }
+  const draws = []; let n = 0;
+  for (const [id, list] of buckets){
+    const start = n;
+    for (const p of list){ if (n >= MAX_INST) break; const o = n*6; instData[o]=p.x; instData[o+1]=p.y; instData[o+2]=p.z; instData[o+3]=p.rot; instData[o+4]=p.s; instData[o+5]=p.tint; n++; }
+    draws.push([nature.models[id], start, n - start]);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, instData, 0, n*6);
+  gl.useProgram(meshProg);
+  const u = meshProg.u;
+  gl.uniform2f(u.uCam, camX, camY); gl.uniform2f(u.uHalf, halfX, halfY);
+  gl.uniform1f(u.uTime, time); gl.uniform1f(u.uShadow, shadowPass ? 1 : 0); gl.uniform1f(u.uShadowStrength, SKY.shadow);
+  setLight(u);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, nature.tex); gl.uniform1i(u.uTex, 0);
+  bindSkyTextures(u, 1);
+  for (const [md, start, count] of draws){
+    if (!count) continue;
+    gl.bindVertexArray(md.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+    gl.vertexAttribPointer(nature.iA, 4, gl.FLOAT, false, 24, start*24);
+    gl.vertexAttribPointer(nature.iB, 2, gl.FLOAT, false, 24, start*24 + 16);
+    gl.drawElementsInstanced(gl.TRIANGLES, md.indices, gl.UNSIGNED_SHORT, md.istart*2, count);
+  }
+  gl.bindVertexArray(null);
+}
+
+/* ---------------- dynamic sky: a full day every 10 minutes ----------------
+   About 5 minutes of daylight, then about 5 of night. Colors are the Godot
+   sky shader defaults; blend is its LIGHT0_DIRECTION.y (sun height).      */
+const CYCLE = 600;
+let skyClock = CYCLE*0.07;
+const SKY = { sun: [0, 0, 1], dir: [0, 0, 1], col: [1, 1, 1], amb: [0.3, 0.3, 0.3], day: 1, shadow: 0.4, lit: [1, 1, 1] };
+const C_SKY_DAY = [0.0, 0.3, 0.7], C_HOR_DAY = [0.75, 0.85, 0.85], C_HOR_SUNSET = [0.9, 0.4, 0.1];
+const C_SKY_SUNSET = [0.15, 0.2, 0.4], C_HOR_NIGHT = [0.1, 0.15, 0.2], C_SKY_NIGHT = [0.05, 0.10, 0.15];
+const mix3 = (a, b, t) => [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t, a[2] + (b[2]-a[2])*t];
+function updateSky(dt){
+  skyClock = (skyClock + dt) % CYCLE;
+  const ph = skyClock/CYCLE*Math.PI*2;                       // 0 sunrise, pi/2 noon, pi sunset
+  const sx = Math.cos(ph)*0.92, sy = -0.42, sz = Math.sin(ph), l = Math.hypot(sx, sy, sz);
+  SKY.sun = [sx/l, sy/l, sz/l];
+  const b = SKY.sun[2], c01 = Math.min(1, Math.max(0, b)), n4 = Math.min(1, Math.pow(Math.max(0, 1 + b), 4));
+  const hor = mix3(C_HOR_NIGHT, mix3(C_HOR_SUNSET, C_HOR_DAY, c01), n4);
+  const sky = mix3(C_SKY_NIGHT, mix3(C_SKY_SUNSET, C_SKY_DAY, c01), n4);
+  const skyAmb = mix3(sky, hor, 0.35);
+  SKY.day = smooth(-0.12, 0.3, b);
+  SKY.amb = skyAmb.map(v => 0.05 + 0.15*SKY.day + v*0.3);
+  if (b >= 0){ SKY.dir = SKY.sun; SKY.col = mix3([1.0, 0.5, 0.25], [1.0, 0.96, 0.88], smooth(0.0, 0.45, b)).map(v => v*0.82*smooth(-0.02, 0.2, b)); }
+  else { SKY.dir = SKY.sun.map(v => -v); SKY.col = [0.5, 0.55, 0.7].map(v => v*0.3*smooth(-0.02, 0.2, -b)); }
+  SKY.shadow = 0.32*smooth(0.0, 0.25, Math.abs(b))*(b >= 0 ? 1 : 0.5);
+  SKY.lit = SKY.amb.map((a, i) => Math.pow(a + SKY.col[i]*Math.max(SKY.dir[2], 0), 0.4545));
+}
+function setLight(u){
+  if (u.uLightDir) gl.uniform3fv(u.uLightDir, SKY.dir);
+  if (u.uLightCol) gl.uniform3fv(u.uLightCol, SKY.col);
+  if (u.uAmbient) gl.uniform3fv(u.uAmbient, SKY.amb);
+  if (u.uSkyClock) gl.uniform1f(u.uSkyClock, time);
+  if (u.uCloudWind) gl.uniform2f(u.uCloudWind, 0.5, 0.5);
+  if (u.uDay) gl.uniform1f(u.uDay, SKY.day);
+  if (u.uSunG) gl.uniform3f(u.uSunG, SKY.sun[0], SKY.sun[2], -SKY.sun[1]);
+  if (u.uBlend) gl.uniform1f(u.uBlend, SKY.sun[2]);
+  if (u.uSinT) gl.uniform1f(u.uSinT, SIN_T);
+  if (u.uCosT) gl.uniform1f(u.uCosT, COS_T);
+  if (u.uLitS) gl.uniform3fv(u.uLitS, SKY.lit);
+}
+function bindSkyTextures(u, first){
+  [[cloudTex1, 'uCloud1'], [cloudTex2, 'uCloud2'], [starTex, 'uStars'], [night2Tex, 'uNight2']].forEach(([t, n], i) => {
+    if (u[n]){ gl.activeTexture(gl.TEXTURE0 + first + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(u[n], first + i); }
+  });
+}
+let shadowTex = null, shadowFbo = null, shadowW = 0, shadowH = 0;
+function ensureShadowTarget(){
+  if (shadowW === canvas.width && shadowH === canvas.height) return;
+  shadowW = canvas.width; shadowH = canvas.height;
+  if (!shadowTex){ shadowTex = gl.createTexture(); shadowFbo = gl.createFramebuffer(); }
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, shadowW, shadowH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, shadowTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+const sparks = [];
+function updateSparks(dt){
+  for (let i = sparks.length - 1; i >= 0; i--){ const k = sparks[i]; k.life -= dt; if (k.life <= 0){ sparks.splice(i, 1); continue; } k.x += k.vx*dt; k.y += k.vy*dt; }
+}
+
 /* ======================================================================
    Game state and physics
    ====================================================================== */
 const START_Y = 0;
 const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, hp:100, steer:0, throttle:0, flash:0 };
 let state = 'ready';                 // ready | run | over
-let time = 0, score = { gates:0, maxY:0 };
+let time = 0, score = { gates:0, dist:0 };
 let best = 0;
 try { best = +localStorage.getItem('riverrun.best') || 0; } catch(e) {}
 const input = { up:false, down:false, left:false, right:false };
@@ -917,10 +1306,10 @@ const cam = { x:0, y:0, half:14, shake:0 };
 const particles = [];
 
 function resetGame(){
-  boat.x = cx(START_Y); boat.y = START_Y; boat.th = 0; boat.vx = 0; boat.vy = 0; boat.w = 0;
+  boat.x = spawn.x; boat.y = spawn.y; boat.th = spawn.th; boat.vx = 0; boat.vy = 0; boat.w = 0;
   boat.hp = 100; boat.steer = 0; boat.throttle = 0; boat.flash = 0;
-  score = { gates:0, maxY:0 };
-  gateState.clear(); cells.clear(); particles.length = 0;
+  score = { gates:0, dist:0 }; nextGate = 0; lap = 0;
+  particles.length = 0; sparks.length = 0;
   cam.x = boat.x; cam.y = boat.y + 5; cam.shake = 0;
   state = 'ready';
   document.getElementById('over').classList.add('hide');
@@ -928,7 +1317,7 @@ function resetGame(){
   updateHud(true);
 }
 function startGame(){
-  if (state !== 'ready') return;
+  if (state !== 'ready' || !natureReady) return;
   const u = baseFlow(boat.x, boat.y); boat.vx = u[0]; boat.vy = u[1];
   state = 'run';
   document.getElementById('start').classList.add('hide');
@@ -1005,14 +1394,12 @@ function stepBoat(dt, controlled){
   }
 }
 
-function checkGates(prevY){
-  for (const g of gatesNear(boat.y, 8)){
-    if (gateState.get(g.k)) continue;
-    if (prevY < g.y && boat.y >= g.y){
-      if (Math.abs(boat.x - g.mid) < g.gap){
-        gateState.set(g.k, 1); score.gates++; toast('Gate cleared  +50');
-      } else { gateState.set(g.k, 2); toast('Gate missed', true); }
-    }
+function checkGates(px, py){                    // gates count only in order, crossed in the travel direction
+  const g = gates[nextGate]; if (!g) return;
+  const s0 = (px - g.x)*g.tan[0] + (py - g.y)*g.tan[1], s1 = (boat.x - g.x)*g.tan[0] + (boat.y - g.y)*g.tan[1];
+  if (s0 < 0 && s1 >= 0 && Math.abs((boat.x - g.x)*g.rad[0] + (boat.y - g.y)*g.rad[1]) < g.gap){
+    score.gates++; nextGate = (nextGate + 1) % gates.length;
+    if (nextGate === 0){ lap++; toast('Lap ' + lap + ' complete  +50'); } else toast('Gate cleared  +50');
   }
 }
 
@@ -1022,7 +1409,7 @@ function wreck(){
   let newBest = false;
   if (total > best){ best = total; newBest = true; try { localStorage.setItem('riverrun.best', String(best)); } catch(e) {} }
   document.getElementById('overText').textContent =
-    `Score ${total}  (${Math.floor(score.maxY)} m, ${score.gates} gates). ` + (newBest ? 'New personal best!' : `Best ${best}.`);
+    `Score ${total}  (${Math.floor(score.dist)} m, ${score.gates} gates). ` + (newBest ? 'New personal best!' : `Best ${best}.`);
   document.getElementById('over').classList.remove('hide');
   runSubmitted = false; el('submit').disabled = total <= 0; el('submit').textContent = 'Submit score';
   loadBoard();
@@ -1055,13 +1442,13 @@ async function submitScore(){
   try { localStorage.setItem('riverrun.name', name); } catch(e) {}
   try {
     const r = await fetch(SB_URL + '/rest/v1/scores', { method:'POST', headers: { ...sbHeaders, Prefer:'return=minimal' },
-      body: JSON.stringify({ player: name, score: scoreTotal(), distance: Math.floor(Math.max(0, score.maxY)), gates: score.gates }) });
+      body: JSON.stringify({ player: name, score: scoreTotal(), distance: Math.floor(score.dist), gates: score.gates }) });
     if (!r.ok) throw new Error(r.status);
     el('submit').textContent = 'Submitted';
   } catch(e){ runSubmitted = false; el('submit').disabled = false; el('submit').textContent = 'Retry'; }
   loadBoard();
 }
-const scoreTotal = () => score.gates*50 + Math.floor(Math.max(0, score.maxY));
+const scoreTotal = () => score.gates*50 + Math.floor(score.dist);
 
 /* ---------- foam particles (carried along by the current) ---------- */
 function spawnFoam(x, y, vx, vy, life, size, alpha){
@@ -1121,20 +1508,22 @@ function simStep(src){
 /* ---------- main update ---------- */
 function update(dt){
   time += dt;
+  updateSky(dt);
+  updateSparks(dt);
   const target = (input.up ? 1 : 0) - (input.down ? 1 : 0);
   const steerT = (input.left ? 1 : 0) - (input.right ? 1 : 0);
   boat.throttle += (target - boat.throttle)*Math.min(1, dt*5);
   boat.steer    += (steerT - boat.steer)*Math.min(1, dt*7);
   boat.flash = Math.max(0, boat.flash - dt*2.5);
-  near = obstaclesNear(boat.y, 28);
+  near = obstaclesNear(boat.x, boat.y, 28);
 
-  const prevY = boat.y;
+  const prevX = boat.x, prevY = boat.y;
   if (state === 'ready'){
     boat.vx = boat.vy = boat.w = 0;                           // moored at the start line
   } else {
     const n = Math.max(1, Math.ceil(dt/(1/120))), h = dt/n;
     for (let i=0;i<n;i++) stepBoat(h, state === 'run');
-    if (state === 'run'){ checkGates(prevY); score.maxY = Math.max(score.maxY, boat.y); }
+    if (state === 'run'){ checkGates(prevX, prevY); score.dist += Math.hypot(boat.x - prevX, boat.y - prevY); }
   }
 
   // wake foam
@@ -1152,6 +1541,16 @@ function update(dt){
     spawnFoam(boat.x + fx*0.9 + nx*0.55*side, boat.y + fy*0.9 + ny*0.55*side, u[0] + nx*side*1.1, u[1] + ny*side*1.1, 1.1+Math.random()*0.7, 0.22+Math.random()*0.15, 0.7);
   }
   updateParticles(dt);
+  if (state !== 'over'){                                      // glow_particle sparks from the jets
+    const open = Math.abs(boat.throttle);
+    let ns = Math.floor(open*60*dt + Math.random());
+    while (ns-- > 0 && sparks.length < 160){
+      const side = Math.random() < 0.5 ? -0.32 : 0.32, rev = boat.throttle < 0, ay = rev ? 1.0 : -1.4, dirSign = rev ? 1 : -1;
+      const px = boat.x + nx*side + fx*ay, py = boat.y + ny*side + fy*ay;
+      const sp = 3 + Math.random()*4;
+      sparks.push({ x: px, y: py, vx: fx*sp*dirSign + (Math.random() - 0.5)*1.2 + boat.vx*0.5, vy: fy*sp*dirSign + (Math.random() - 0.5)*1.2 + boat.vy*0.5, life: 0.25 + Math.random()*0.3, max: 0.55 });
+    }
+  }
 
   // simulation
   if (simOK){
@@ -1163,7 +1562,7 @@ function update(dt){
   // camera
   const speed = Math.hypot(boat.vx, boat.vy);
   const aspect = canvas.width/Math.max(1, canvas.height);
-  const halfT = Math.max(12.5 + speed*0.5, 11/aspect);
+  const halfT = Math.max(14 + speed*0.5, 11/aspect);
   cam.half += (halfT - cam.half)*(1 - Math.exp(-dt*2.2));
   const tx = boat.x + boat.vx*0.25, ty = boat.y + 3.5 + boat.vy*0.3;
   const kk = 1 - Math.exp(-dt*4.5);
@@ -1175,94 +1574,144 @@ function update(dt){
 
 /* ---------- rendering ---------- */
 function drawScene(){
+  ensureShadowTarget();
   const aspect = canvas.width/canvas.height;
   const sh = cam.shake*cam.shake*0.5;
   const camX = cam.x + (Math.random()-0.5)*sh, camY = cam.y + (Math.random()-0.5)*sh;
-  const halfX = cam.half*aspect, halfY = cam.half;
+  const halfX = cam.half*aspect, halfY = cam.half, gHalfY = halfY/COS_T;
+  const viewR = Math.max(halfX, gHalfY) + 8;
+
+  // 1. shadows of every model, flattened along the light into a buffer (max blend, no double darkening)
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+  gl.viewport(0, 0, shadowW, shadowH);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  if (nature && SKY.shadow > 0.01){
+    gl.enable(gl.BLEND); gl.blendEquation(gl.MAX); gl.blendFunc(gl.ONE, gl.ONE);
+    drawMeshes(true, camX, camY, halfX, halfY);
+    gl.blendEquation(gl.FUNC_ADD); gl.disable(gl.BLEND);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
   gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.disable(gl.BLEND);
+  gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+
+  // 2. water and ground
   gl.useProgram(waterProg); gl.bindVertexArray(emptyVao);
   const w = waterProg.u;
   gl.uniform2f(w.uCam, camX, camY); gl.uniform2f(w.uHalf, halfX, halfY);
   gl.uniform1f(w.uTime, time); gl.uniform1f(w.uWorld, SIM_WORLD); gl.uniform1f(w.uSimN, SIM_N);
-  gl.uniform1f(w.uHasSim, simOK ? 1 : 0);
-  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, simOK ? sim.tex[sim.r] : dummyTex);
-  gl.uniform1i(w.uSim, 0);
-  [[waveTex,'uWave'],[waveNormTex,'uWaveN'],[foamTex,'uFoam'],[causTex,'uCaus']].forEach(([t,name], i) => {
+  gl.uniform1f(w.uHasSim, simOK ? 1 : 0); gl.uniform1f(w.uToon, toonWater ? 1 : 0);
+  setLight(w);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, simOK ? sim.tex[sim.r] : dummyTex); gl.uniform1i(w.uSim, 0);
+  [[waveTex,'uWave'],[waveNormTex,'uWaveN'],[foamTex,'uFoam'],[causTex,'uCaus'],[groundNoiseTex,'uGroundNoise']].forEach(([t, name], i) => {
     gl.activeTexture(gl.TEXTURE1 + i); gl.bindTexture(gl.TEXTURE_2D, t); gl.uniform1i(w[name], 1 + i);
   });
-  gl.uniform1f(w.uToon, toonWater ? 1 : 0);
-  gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, groundNoiseTex); gl.uniform1i(w.uGroundNoise, 5);
+  bindSkyTextures(w, 6);
+  const vis = obstaclesNear(camX, camY, viewR);
   const rockArr = new Float32Array(MAX_ROCKS*3); let rc = 0;
-  for (const o of obstaclesNear(camY, halfY + 6)){
-    if (rc >= MAX_ROCKS) break;
-    if (Math.abs(o.x - camX) > halfX + 6) continue;
-    if (!o.rock) continue;                                    // buoys float, they do not change depth
-    rockArr[rc*3] = o.x; rockArr[rc*3+1] = o.y; rockArr[rc*3+2] = o.r*0.92; rc++;
-  }
+  for (const o of vis){ if (!o.rock || rc >= MAX_ROCKS) continue; rockArr[rc*3] = o.x; rockArr[rc*3+1] = o.y; rockArr[rc*3+2] = o.r*0.95; rc++; }
   gl.uniform3fv(w.uRocks, rockArr); gl.uniform1i(w.uRockCount, rc);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  // grass clumps, then tree canopies over them
+  // 3. BinbunGrass clumps
   if (grassReady){
     const g = grassProg.u;
-    const cols = Math.ceil(2*halfX/GRASS_CELL) + 6, rows = Math.ceil(2*halfY/GRASS_CELL) + 10;
-    const ox = Math.floor((camX - halfX)/GRASS_CELL) - 3, oy = Math.floor((camY + halfY)/GRASS_CELL) + 2;
+    const cols = Math.ceil(2*halfX/GRASS_CELL) + 6, rows = Math.ceil(2*gHalfY/GRASS_CELL) + 10;
+    const ox = Math.floor((camX - halfX)/GRASS_CELL) - 3, oy = Math.floor((camY + gHalfY)/GRASS_CELL) + 2;
     gl.useProgram(grassProg); gl.bindVertexArray(emptyVao);
     gl.uniform2f(g.uCam, camX, camY); gl.uniform2f(g.uHalf, halfX, halfY);
     gl.uniform2f(g.uWindVel, WIND_VELOCITY[0], WIND_VELOCITY[1]);
     gl.uniform2i(g.uOrigin, ox, oy); gl.uniform1i(g.uCols, cols);
     gl.uniform1f(g.uCell, GRASS_CELL); gl.uniform1f(g.uTime, time); gl.uniform1f(g.uRandomVariation, 0.0);
     gl.uniform1f(g.uCutStart, 0.4); gl.uniform1f(g.uCutEnd, 0.6);
+    setLight(g);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, grassAtlas); gl.uniform1i(g.uAtlas, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, groundNoiseTex); gl.uniform1i(g.uGroundNoise, 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, windNoiseTex); gl.uniform1i(g.uWind, 2);
+    bindSkyTextures(g, 3);
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cols*rows);
   }
-  gl.useProgram(canopyProg); gl.bindVertexArray(emptyVao);
-  gl.uniform2f(canopyProg.u.uCam, camX, camY); gl.uniform2f(canopyProg.u.uHalf, halfX, halfY);
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.drawArrays(gl.TRIANGLES, 0, 3);
-  gl.disable(gl.BLEND);
 
-  // sprites, back to front
+  // 4. sprites on the water: buoys, foam, boat
   sprCount = 0;
-  const x0 = camX - halfX - 8, x1 = camX + halfX + 8, y0 = camY - halfY - 8, y1 = camY + halfY + 8;
-  const visible = obstaclesNear(camY, halfY + 10).filter(o => o.x > x0 && o.x < x1 && o.y > y0 && o.y < y1);
-  const sd = [0.32, -0.40];
-  for (const o of visible){
-    if (o.rock) pushSprite(o.x + sd[0]*o.r, o.y + sd[1]*o.r, o.r*2.0, 0, 0, 0, o.r*1.25, 0, 0, 0.28);
-    else pushSprite(o.x + 0.12, o.y - 0.16, 0.8, 0, 0, 0, 0.5, 0, 0, 0.3);
-  }
-  for (const o of visible){
-    if (o.rock){
-      const u = baseFlow(o.x, o.y);
-      const half = o.r*5 + 1.5;
-      pushSprite(o.x, o.y, half, 0, 1, o.seed, o.r, u[0], u[1], 1);
-    }
-  }
+  for (const o of vis) if (!o.rock) pushSprite(o.x + 0.12, o.y - 0.16, 0.8, 0, 0, 0, 0.5, 0, 0, 0.3);
+  for (const o of vis) if (o.rock){ const u = baseFlow(o.x, o.y); pushSprite(o.x, o.y, o.r*5 + 1.5, 0, 1, o.seed, o.r, u[0] + 0.02, u[1], 1); }
   for (const p of particles){
     const a = Math.min(1, (p.life/p.max)*1.8) * p.alpha, size = p.size*(1 + (1 - p.life/p.max)*1.6);
     pushSprite(p.x, p.y, size, 0, 6, p.seed, size, 0, a, 0);
   }
-  for (const o of visible) if (o.rock) pushSprite(o.x, o.y, o.r*1.5, 0, 2, o.seed, o.r, 0, 0, 0);
-  for (const o of visible) if (!o.rock){
-    const g = gateState.get(Math.floor(o.y/CELL));
-    const id = g === 1 ? 2 : g === 2 ? 3 : o.buoy;
-    pushSprite(o.x, o.y, 0.75, 0, 3, (o.x*0.37 + o.y*0.11)%1, id, 0, 0, 0);
+  for (const o of vis) if (!o.rock){
+    const id = o.gate === nextGate ? o.buoy : (o.gate < nextGate ? 2 : 3);
+    pushSprite(o.x, o.y, 0.75, 0, 3, (o.x*0.37 + o.y*0.11) % 1, id, 0, 0, 0);
   }
   pushSprite(boat.x + 0.35, boat.y - 0.45, 2.1, boat.th, 5, 0, 0, 0, 0, 0);
   pushSprite(boat.x, boat.y, 2.1, boat.th, 4, 0, boat.steer, 0, boat.flash, 0);
+  const normalCount = sprCount;
+
+  // glow pass content: next gate marker, jet light on the water, beams, flares, balls, sparks
+  const ng = gates[nextGate];
+  if (ng && state !== 'over') pushQuad(ng.x, ng.y, ng.gap, 0.3, Math.atan2(ng.rad[1], ng.rad[0]), 12, 0, 0, 0, 0, 0);
+  if (state !== 'over'){
+    const rev = boat.throttle < -0.05;
+    const open = rev ? Math.min(1, -boat.throttle*0.7) : Math.max(0, boat.throttle)*0.85 + (state === 'run' ? 0.12 : 0.06);
+    const dirTh = boat.th + (rev ? Math.PI : 0) - boat.steer*0.3;
+    const ax = -Math.sin(dirTh), ay = Math.cos(dirTh);
+    const fx = -Math.sin(boat.th), fy = Math.cos(boat.th), rx = Math.cos(boat.th), ry = Math.sin(boat.th);
+    const L = 0.5 + 3.4*open, night = 0.25 + 0.75*(1 - SKY.day);
+    for (const side of [-0.32, 0.32]){
+      const along = rev ? 1.0 : -1.38;
+      const nx = boat.x + rx*side + fx*along, ny = boat.y + ry*side + fy*along;
+      pushQuad(nx - ax*L*0.45, ny - ay*L*0.45, 1.2 + L*0.35, 1.2 + L*0.55, dirTh, 11, 0, 1.2 + L*0.35, 1.2 + L*0.55, night, open);
+      pushQuad(nx - ax*L*0.5, ny - ay*L*0.5, 0.2, L*0.5, dirTh, 7, side, L, open, 0, 0);
+      pushQuad(nx - ax*0.5, ny - ay*0.5, 0.3, 0.5, dirTh, 8, side, 1, open, 0, 0);
+      pushQuad(nx, ny, 0.2, 0.2, dirTh, 9, side, open, 0, 0, 0);
+    }
+  }
+  for (const k of sparks) pushQuad(k.x, k.y, 0.08, 0.08, 0, 10, 0, k.life/k.max, 0, 0, 0);
 
   gl.useProgram(sprProg); gl.bindVertexArray(sprVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, sprBuf);
   gl.bufferSubData(gl.ARRAY_BUFFER, 0, sprData, 0, sprCount*6*FLOATS);
   const s = sprProg.u;
   gl.uniform2f(s.uCam, camX, camY); gl.uniform2f(s.uHalf, halfX, halfY); gl.uniform1f(s.uTime, time);
+  setLight(s);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, groundNoiseTex); gl.uniform1i(s.uNoise, 0);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  gl.drawArrays(gl.TRIANGLES, 0, sprCount*6);
+  gl.drawArrays(gl.TRIANGLES, 0, normalCount*6);
+
+  // 5. model shadows multiplied over everything drawn so far
+  if (nature && SKY.shadow > 0.01){
+    gl.useProgram(compProg); gl.bindVertexArray(emptyVao);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, shadowTex); gl.uniform1i(compProg.u.uShadowTex, 0);
+    gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // 6. glow pass (additive): thruster beams and friends
+  gl.useProgram(sprProg); gl.bindVertexArray(sprVao);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.drawArrays(gl.TRIANGLES, normalCount*6, (sprCount - normalCount)*6);
   gl.disable(gl.BLEND);
+
+  // 7. trees, bushes and rocks, depth tested against each other
+  if (nature){
+    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+    drawMeshes(false, camX, camY, halfX, halfY);
+    gl.disable(gl.DEPTH_TEST);
+  }
+  updateArrow(camX, camY, halfX, halfY);
+}
+
+function updateArrow(camX, camY, halfX, halfY){            // points at the next gate when it is off screen
+  const a = el('arrow'), g = gates[nextGate];
+  if (!g || state !== 'run'){ a.style.display = 'none'; return; }
+  const sx = (g.x - camX)/halfX, sy = (g.y - camY)*COS_T/halfY;
+  if (Math.abs(sx) < 0.92 && Math.abs(sy) < 0.92){ a.style.display = 'none'; return; }
+  const k = 0.85/Math.max(Math.abs(sx), Math.abs(sy));
+  const px = (sx*k*0.5 + 0.5)*innerWidth, py = (0.5 - sy*k*0.5)*innerHeight;
+  a.style.display = 'block';
+  a.style.transform = `translate(${px - 18}px, ${py - 18}px) rotate(${Math.atan2(-sy, sx)}rad)`;
 }
 
 /* ---------- HUD ---------- */
@@ -1270,9 +1719,11 @@ const el = id => document.getElementById(id);
 const hudCache = {};
 function setText(id, text){ if (hudCache[id] !== text){ hudCache[id] = text; el(id).textContent = text; } }
 function updateHud(force){
-  setText('dist', Math.max(0, Math.floor(score.maxY)) + ' m');
+  setText('dist', Math.floor(score.dist) + ' m');
   setText('gates', String(score.gates));
   setText('spd', Math.round(Math.hypot(boat.vx, boat.vy)*3.6) + ' km/h');
+  const hrs = (6 + skyClock/CYCLE*24) % 24;
+  setText('clock', String(Math.floor(hrs)).padStart(2, '0') + ':' + String(Math.floor((hrs % 1)*60)).padStart(2, '0') + (SKY.sun[2] >= 0 ? ' \u2600' : ' \u263E'));
   const hp = Math.round(boat.hp);
   if (force || hudCache.hp !== hp){
     hudCache.hp = hp; const bar = el('hp'); bar.style.width = hp + '%';
@@ -1325,11 +1776,13 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 resetGame();
+loadNature();
 requestAnimationFrame(frame);
 
 // Handle for automated checks.
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; }, get score(){ return score; },
-  startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, cx, hw, baseFlow, get particles(){ return particles.length; }, setToon(v){ toonWater = v; } };
+  startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, baseFlow,
+  get gates(){ return gates; }, get nextGate(){ return nextGate; }, get props(){ return props.length; }, get ready(){ return natureReady; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; }, setToon(v){ toonWater = v; } };
 })();
 </script>
 </body>
