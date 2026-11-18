@@ -6,12 +6,15 @@ how to deploy it, and what the owner has asked for so far.
 ## What it is
 
 A browser boat game in raw WebGL 2 (no libraries). One file: `web/index.html`.
-Top down camera tilted 30 degrees, a randomly generated lake with an island, still water with
-fine wind ripples, a 10 minute day and night sky, BinbunGrass on the land, five boats with
-water jet thrusters, and 46 floating beach balls in four sizes. Open map: no goals, no damage.
+Top down camera tilted 30 degrees, a lake with an island, still water with fine wind ripples,
+a 10 minute day and night sky, BinbunGrass on the land, five boats with water jet thrusters,
+and 46 floating beach balls in four sizes. Open map: no goals, no damage.
+Multiplayer: everyone online shares the lake of the day and sees each other's boats.
 
 - Live: https://river-run-game.vercel.app (also https://river-run-five.vercel.app)
-- Repository: `asarjunsethi-dot/Passion`, branch `claude/funny-faraday-avadul` (all work is here; `main` is not used for the game)
+- Repository: `asarjunsethi-dot/Passion`. The game lives on branch `claude/friendly-pascal-5j9yp3`
+  (it contains all of `claude/funny-faraday-avadul` plus the multiplayer work). `main` does not have the game:
+  a session that starts on `main` will not find it. Merging the game into `main` is recommended.
 - `RESEARCH_AND_PLAN.md` is an older, unrelated plan (an AI creature site); ignore it for the game.
 
 ## Owner preferences (follow these)
@@ -23,38 +26,53 @@ water jet thrusters, and 46 floating beach balls in four sizes. Open map: no goa
   removed (only BinbunGrass remains); gates, laps and hull damage removed (open map); waves removed, then the owner gave
   free rein on water and fine ripples, caustics and shore ripples came back; thrusters must only fire from the stern;
   thrusters must look realistic (water jet spray, not lasers); boats cannot reverse (S only brakes); minimal popups;
-  no graphics or pixel controls; controls live behind a small "?" button; splashes include droplets.
+  no graphics or pixel controls; controls live behind a small "?" button; splashes include droplets;
+  multiplayer added so the owner can see other people playing.
 
 ## Map of `web/index.html` (search for these markers)
 
 | Section | Marker or function | Notes |
 |---|---|---|
-| Lake shape | `Lake definition`, `LAKE`, `bankDist`, `WORLD_GLSL` | Random per visit, `?seed=N` repeats. Harmonic outer shore and island. JavaScript and GLSL share the numbers. `bankDist` is positive on water. |
-| World population | `generateGates`, `generateProps` | Gates are disabled (`NG = 0`). `generateProps` is unused now (KayKit removed); `spawn` is the start point. |
+| Lake shape | `Lake definition`, `SEED`, `LAKE`, `bankDist`, `WORLD_GLSL` | Lake of the day: the seed comes from the UTC date, so everyone online gets the same lake; it changes at midnight UTC. `?seed=N` opens lake N (also a private multiplayer room). `bankDist` is positive on water. `spawn` is the start point. |
 | Shared GLSL | `NOISE_GLSL`, `LIGHT_GLSL`, `CLOUD_GLSL`, `SKY_GLSL` | `SKY_GLSL` is a port of the supplied Godot sky shader. |
-| Wave simulation | `simFS`, `simStep`, `gatherSources`, `RIPPLES` | GPU height field that follows the boat; draws the wake. |
-| Generated textures | `genFS`, `makeWaterTexture` | Wave, foam, caustics, ground noise, wind, clouds, stars. |
-| Water and ground | `waterFS`, block starting `/* ================= lake water` | Ripples (six wave trains), Beer Lambert absorption, refraction, caustics, sky reflection, sun glints, shore foam, haze. Depth model in `waterDepth`. |
-| Grass | `grassVS`, `grassFS`, `GRASS_CELL`, `GRASS_ATLAS_PNG` | Port of BinbunGrass; atlas embedded as a 128 pixel PNG. |
-| Sprites | `SPR_VS`, `SPR_FS`, `pushQuad` | Foam puffs (type 6), spray, and clear water droplets (type 13). Types 7 to 12 are the old glowing beam effect, now unused. |
-| Meshes | `MESH_VS`, `MESH_FS`, `drawMeshes` | Boats and beach balls. `uProp` 0 means boat or ball (pitch and roll via `uRP`). Palette row 7 glows. |
-| Boats | `BOATS`, `selectBoat`, `buildBoat(spec)` | Five specs: Runabout, Speedster, Hydro (catamaran), Jet Ski, Cruiser. Each has mesh parameters and physics (`thrust`, `boost`, `lin`, `quad`, `grip`, `turn`, `hull`, `hullR`, `podX`). |
-| Beach balls | `spawnFloaters`, `updateFloaters`, `buildBall`, `drawBalls` | Sizes 0.42, 0.75, 1.2, 1.8 m radius; mass grows with size. |
-| Sky cycle | `CYCLE` (600 s), `updateSky`, `SKY` | About 5 minutes of day then 5 of night. Colors from the Godot sky defaults. |
-| Shadows | `ensureShadowTarget`, `COMPOSITE_FS` | Meshes are flattened along the light into a shadow buffer, then multiplied over the scene. |
-| Physics | `stepBoat`, `contact`, `jump`, `thrusterState` | Thrust only forward; S brakes; Q/E strafe; Space jump; spin in place at low throttle. All jets leave the stern pods. |
-| Spray | `throwSpray`, `updateSparks` (array `sparks`) | Ballistic mist plus about 40% clear droplets (`drop` flag). Fired by thrusters, jump landings, ball hits and shore scrapes. Drawn after meshes in pass 8 of `drawScene`. |
-| Render order | `drawScene` | 1 shadow buffer, 2 water and ground, 3 grass, 4 sprites, 5 shadow multiply, 6 glow pass (unused now), 7 meshes, 8 spray. |
-| Interface | `#speedo`, `#clockbox`, `#helpbtn`, `#helppanel`, `#start` | Speed and boost line, clock, a small "?" button that shows the controls list (H also toggles). No graphics controls: the owner removed the pixels slider and water style toggle. Render scale is automatic in `resize` (capped at 2.3 million pixels). |
-| Leaderboard | `SB_URL`, `loadBoard`, `submitScore` | Supabase code still present but unreachable since there is no game over. |
+| Wave simulation | `simFS`, `simStep`, `gatherSources`, `simC` | GPU height field centred on the boat the camera follows; every boat near it adds a wake. The water shader fades it out before its wrapping edge (`uSimC`). |
+| Generated textures | `genFS`, `makeWaterTexture` | Foam, caustics, ground noise, wind, clouds, stars. |
+| Water and ground | `waterFS`, block starting `/* ================= lake water` | Ripples (six wave trains), light absorption, refraction, caustics, sky reflection, sun glints, shore foam, haze. Depth from the shore distance (`depthAt`). |
+| Grass | `grassVS`, `grassFS`, `GRASS_CELL`, `GRASS_ATLAS_PNG` | Port of BinbunGrass. Clumps over water exit the vertex shader early. |
+| Sprites | `SPR_VS`, `SPR_FS`, `pushSprite` | Foam and spray puffs (type 6) and clear droplets (type 13). |
+| Meshes | `MESH_VS`, `MESH_FS`, `drawMeshes`, `INST` | Boats and beach balls. Each instance holds x, y, z, heading, scale, tint, roll, pitch, so all balls are one draw call and each boat type is one. Palette row 7 glows. |
+| Boats | `BOATS`, `selectBoat`, `buildBoat(spec)`, `boatMeshFor` | Five specs: Runabout, Speedster, Hydro (catamaran), Jet Ski, Cruiser, with mesh parameters and physics. |
+| Beach balls | `spawnFloaters`, `updateFloaters`, `buildBall` | Every hull pushes them (other sailors' too). Each player keeps their own copy, so balls can differ between screens. |
+| Sky cycle | `CYCLE` (600 s), `updateSky`, `SKY` | About 5 minutes of day then 5 of night. Each player has their own clock. |
+| Shadows | `ensureShadowTarget`, `COMPOSITE_FS` | Meshes flattened along the light into a shadow buffer, then multiplied over the scene. |
+| Physics | `stepBoat`, `contact`, `jump`, `thrusterState(b, side)` | Thrust only forward; S brakes; Q/E strafe; Space jump; spin at low throttle. Boats bump each other (each client moves only its own boat, half impulse each). |
+| Effects | `boatEffects(b, dt)`, `throwSpray`, `updateSparks` | Wake foam, jet spray and landing splashes for any boat, yours or a remote one near the camera. |
+| Multiplayer | `NET_URL`, `netConnect`, `netMessage`, `remoteState`, `updateRemotes`, `netSend` | Supabase Realtime channel `river-run-<seed>`, raw Phoenix protocol over a WebSocket. Presence lists who is online; broadcasts carry boat state. See below. |
+| Watching | `followed`, `setWatching`, `cycleWatch`, `updateTags` | F (or clicking the "other sailors" line under the clock) cycles the camera through other sailors and back. Any movement key returns to your boat. Name tags sit over boats, or at the screen edge pointing to them. |
+| Render order | `drawScene` | 1 shadow buffer, 2 water and ground, 3 grass, 4 foam, 5 shadow multiply, 6 meshes, 7 spray, then tags. |
+| Interface | `#speedo`, `#clockbox`, `#netbox`, `#tags`, `#helpbtn`, `#helppanel`, `#start` | Speed of the followed boat and your boost, clock, sailor count, "?" controls list (H toggles). |
+| Render scale | `adaptScale`, `resize`, `pixelCap` | Automatic: starts at 2.3 million pixels, drops a fifth after 2 slow seconds (down to 0.6 million), climbs back after 8 smooth seconds but never above a budget that was slow. |
 
-Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, H help, R reset.
+Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, F watch others, H help, R reset.
+URL options: `?seed=N` (lake N, private room), `?name=Ana` (name shown to others, remembered), `?offline` (no network).
+
+## Multiplayer details
+
+- Transport: `wss://yghxquvblqkqyzqjfvbx.supabase.co/realtime/v1/websocket` with the public publishable key,
+  `vsn=1.0.0`, heartbeat every 25 seconds, reconnect with backoff (1, 2, 4 ... 30 seconds).
+- Message: `{i: id, n: name, d: [x, y, heading, z, vz, vx, vy, yaw rate, roll, pitch, throttle, steer, strafe, boat, flags]}`,
+  flags 1 boosting, 2 sailing, 4 jumping. Every field is validated and clamped on receipt; names are stripped to 16 characters.
+- Rate: nothing while alone. With company, up to 10 per second, lowered to keep a crowd near 60 deliveries a second,
+  and 1 per second while moored or idle.
+- Cost: Supabase counts each broadcast once sent plus once per receiver. Free plan quota is 2 million a month, so two
+  players sailing nonstop use about 40 a second, roughly 14 hours of shared play a month. Watch the usage page.
+- Trust: the channel is public. Anyone with the key can send fake boats; validation limits damage to fake positions.
 
 ## Testing
 
-Debug handle: `window.__river` exposes `boat`, `cam`, `input`, `state`, `ready`, `floaters`,
-`setManual(true)`, `tick(dt)` (update and draw), `step(dt)` (physics only, fast), `setClock(seconds)`,
-`startGame()`, `resetGame()`, `bankDist(x, y)`.
+Debug handle: `window.__river` exposes `boat`, `cam`, `input`, `state`, `ready`, `floaters`, `seed`, `pixelCap`,
+`id`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
+(update and draw), `step(dt)` (physics only, fast), `setClock(seconds)`, `startGame()`, `resetGame()`, `bankDist(x, y)`.
 
 ```bash
 cd web && python3 -m http.server 8765 --bind 127.0.0.1
@@ -66,34 +84,36 @@ NODE_PATH=$(npm root -g) node tools/tests/shore.js name 150 boat 0 13
 
 Scripts in `tools/tests/`: `shore.js` (screenshot: name, clock seconds, camera x or `boat`, y, half height),
 `modes.js` (strafe, spin, brake, jump), `boats.js` and `five.js` (boat speeds and close ups), `balls.js` (ramming),
-`lakebot.js` (old lap bot, gates are gone). Headless Chromium uses SwiftShader, so it is slow: prefer `step()`
-for physics and take few screenshots. A screenshot right after thousands of `step()` calls can time out.
+`multiplayer.js` (two browsers on one lake through the live Supabase service; needs the session network to allow
+`yghxquvblqkqyzqjfvbx.supabase.co`, which the cloud environment "Passion (River Run)" does).
+Headless Chromium uses SwiftShader, so it is slow: prefer `step()` for physics and take few screenshots.
 
 ## Deploying
 
 The Vercel project is connected to GitHub. After pushing the branch, deploy to production with the Vercel tool
 `create_deployment`: team `team_lbiXOtqjHT5IDaKipDJH6sHF`, project `river-run`, target `production`,
-gitSource `{type: github, org: asarjunsethi-dot, repo: Passion, ref: claude/funny-faraday-avadul, sha: <commit>}`,
+gitSource `{type: github, org: asarjunsethi-dot, repo: Passion, ref: claude/friendly-pascal-5j9yp3, sha: <commit>}`,
 with `skipAutoDetectionConfirmation: 1`. Root directory is `web`, no build step. Vercel login protection is off.
 Pushing alone only makes preview builds because production follows the default branch.
 
 ## Supabase
 
-Project `river-run` (id `yghxquvblqkqyzqjfvbx`, region ap-south-1) holds table `public.scores` with row level
-security (anyone can read; inserts must satisfy `score <= distance + gates*50 + 50`). Currently unused by the game.
-Another older project `ember` exists and was never touched.
+Project `river-run` (id `yghxquvblqkqyzqjfvbx`, region ap-south-1). Realtime carries the multiplayer channel.
+Table `public.scores` is left over from the removed leaderboard and is no longer used by the game (anyone can read
+it and insert into it); dropping it is reasonable. Another older project `ember` exists and was never touched.
 
 ## Asset packs supplied by the owner
 
-- Godot water shader (`water.gdshader`, `water_toon.gdshader`): ported, then heavily reworked.
+- Godot water shader: ported, then heavily reworked.
 - BinbunGrass (grass shader and clump atlas): ported; the atlas is embedded.
 - Godot sky shader (`SourceCode.zip`): ported into `SKY_GLSL`.
-- BinbunVFX beam pack: ported as thruster beams, later replaced by water spray (code remains, unused).
-- KayKit Forest Nature Pack (CC0): used, then removed at the owner's request. `tools/build_nature.py` can repack it.
+- BinbunVFX beam pack: ported as thruster beams, later replaced by water spray; the code was deleted.
+- KayKit Forest Nature Pack (CC0): used, then removed. Its loader and `tools/build_nature.py` were deleted;
+  both are in git history if ever wanted.
 
 ## Known gaps and ideas
 
-- Frame rate on real graphics cards has never been measured. The owner removed the pixels slider, so if weak laptops
-  struggle, lower the pixel cap in `resize` rather than adding a control back.
-- Unused code worth deleting when convenient: beam sprite types 7 to 12, gates, arrow, KayKit loader, leaderboard.
+- Frame rate on real graphics cards has still not been measured; the automatic render scale is the fallback.
+  A 30 hertz display reads as slow and will settle at a lower resolution.
+- Balls, sky clock and spray are local to each player; only boats are shared.
 - Camera is fixed north up; the tilted view, grass and shadows depend on that.
