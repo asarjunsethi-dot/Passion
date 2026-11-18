@@ -602,91 +602,32 @@ void main(){
   vec3 col;
 
   if (d > -0.3){
-    vec2 u = flowAt(p);
-    /* ---- flow map phases: textures ride the current without smearing ---- */
-    float T = 2.4;
-    float ph0 = fract(uTime/T), ph1 = fract(uTime/T + 0.5);
-    float w0 = 1.0 - abs(2.0*ph0 - 1.0), w1 = 1.0 - w0;
-    float vn = inversesqrt(w0*w0 + w1*w1);            // keeps contrast steady through the cross fade
-    vec2 d0 = u*(ph0*T), d1 = u*(ph1*T);
-    vec2 j1 = vec2(0.37, 0.61);
-
-    /* ---- waves ---- */
-    // calm lake: the ambient wave layers are switched off, only the live simulation (wake, rocks) moves the surface
-    float wave = 0.0;
-    vec3 nmap = vec3(0.0, 0.0, 1.0);
-    vec2 simG = vec2(0.0); float hs = 0.0;
-    if (uHasSim > 0.5){
-      float dx = uWorld/uSimN;
-      hs = texture(uSim, p/uWorld).r;
-      simG = vec2(texture(uSim, (p+vec2(dx,0.0))/uWorld).r - texture(uSim, (p-vec2(dx,0.0))/uWorld).r,
-                  texture(uSim, (p+vec2(0.0,dx))/uWorld).r - texture(uSim, (p-vec2(0.0,dx))/uWorld).r)/(2.0*dx);
-    }
-    wave = smoothstep(0.0, 1.0, clamp(wave + hs*1.4, 0.0, 1.0));
-
-    /* ---- refraction (Godot offsets screen UV; here world meters) ---- */
-    vec2 bp = p + vec2((pow(wave, REFRACTION_EXPONENT)*2.0 - 0.5)*0.01*REFRACTION_AMOUNT) * (2.0*uHalf.y) - simG*0.35;
-    float Dr = waterDepth(bp);
-    float preDepth = pow(clamp((DEPTH_SIZE - Dr)/DEPTH_SIZE, 0.0, 1.0), 4.0);
-    bp = mix(bp, p, preDepth);
-    if (Dr < 0.0) bp = p;
-    float D = waterDepth(bp);
-    float depth = pow(clamp((DEPTH_SIZE - D)/DEPTH_SIZE, 0.0, 1.0), 4.0);   // 1 in the shallows, 0 when deep
-
-    /* ---- caustics on the bed ---- */
-    vec2 suv = bp*0.2;
-    float c1a = texture(uCaus, (suv - d0*0.2)*CAUSTICS_SCALE).r;
-    float c1b = texture(uCaus, (suv - d1*0.2 + j1)*CAUSTICS_SCALE).r;
-    vec3 c2a = sampleCaustics(suv + c1a*0.05 - d0*0.2*0.8);
-    vec3 c2b = sampleCaustics(suv + c1b*0.05 - d1*0.2*0.8 + j1);
-    vec3 caustics = (c2a*w0 + c2b*w1) * (1.0 - depth);
-
-    /* ---- foam ---- */
-    float edgeFoam = clamp((EDGE_FOAM_DEPTH_SIZE - D)/EDGE_FOAM_DEPTH_SIZE, 0.0, 1.0);
-    float foam = max(edgeFoam, wave*WAVE_FOAM_AMOUNT);
-    float fA = texture(uFoam, (p - d0)*0.5).r, fB = texture(uFoam, (p - d1)*0.5 + j1).r;
-    float foamShape = 1.0 - clamp(0.5 + ((fA*w0 + fB*w1) - 0.5)*vn, 0.0, 1.0);
-    foam = clamp((foam - FOAM_START)/(FOAM_END - FOAM_START), 0.0, 1.0);
-    foam = clamp((foam - foamShape)/(1.0 - foamShape + 1e-4), 0.0, 1.0);
-    foam = pow(foam, FOAM_EXPONENT);
-
-    /* ---- albedo, exactly as Godot combines it (in linear color) ---- */
-    vec3 surf = toLinear(SURFACE_COLOR), deepC = toLinear(DEPTH_COLOR), foamC = toLinear(FOAM_COLOR);
-    vec3 flatColor = mix(deepC, surf, depth);
-    vec3 color = bedColor(bp) + pow(caustics*CAUSTICS_STRENGTH, vec3(2.0));
-    color = mix(flatColor, color, 0.4*depth);
-    color = mix(color, surf, wave*WAVE_HIGHLIGHT);
-    color = mix(color, foamC, foam);
-
-    /* ---- lighting from the dynamic sky ---- */
-    vec3 N = normalize(vec3(nmap.xy*0.6 - simG*1.2, nmap.z));
-    vec3 L = uLightDir, V = vec3(0.0, -uSinT, uCosT), H = normalize(L + V);
-    float rough = mix(SURFACE_ROUGHNESS, FOAM_ROUGHNESS, foam);
-    float ndl = dot(N, L), ndh = clamp(dot(N, H), 0.0, 1.0);
-    vec3 lit;
-    if (uToon > 0.5){
-      // water_toon.gdshader light(): stepped diffuse and specular
-      float l = stepped(ndl, DIFFUSE_STEPS, DIFFUSE_SMOOTHNESS);
-      float r = mix(0.01, 0.99, rough);
-      float sp = clamp(pow(ndh, 16.0/r), 0.1, 0.99);
-      sp = mix(pow(sp, 2.0 - r), 0.0, pow(r, 0.1));
-      sp = stepped(sp, SPECULAR_STEPS, SPECULAR_SMOOTHNESS);
-      lit = color*(uAmbient + (1.0 + color/PI)*l*uLightCol) + (PI + color)*sp*0.5*uLightCol;
-    } else {
-      // water.gdshader uses Godot's standard lighting: Lambert plus GGX specular
-      float a = max(rough*rough, 0.03), a2 = a*a;               // wider than Godot's 0.05 roughness: a sheen, not pinpoint glitter
-      float dd = ndh*ndh*(a2 - 1.0) + 1.0;
-      float spec = min(a2/(PI*dd*dd)*(0.04 + 0.96*pow(1.0 - clamp(dot(H, V), 0.0, 1.0), 5.0))*0.25*max(ndl, 0.0), 1.5);
-      lit = color*(uAmbient + 1.1*max(ndl, 0.0)*uLightCol) + uLightCol*spec*mix(0.35, 1.0, uDay);
-    }
-    // the sky (clouds, stars, sky color) reflected in the lake through a calmer normal, so the
-    // reflection reads as a picture instead of glitter; sun and moon glints come from the specular above
-    vec3 Ns = normalize(mix(vec3(0.0, 0.0, 1.0), N, 0.07));
-    vec3 R = reflect(-V, Ns);
-    vec3 skyR = min(skyColor(vec3(R.x, R.z, -R.y)), vec3(1.0));
-    float F = 0.02 + 0.98*pow(1.0 - clamp(dot(Ns, V), 0.0, 1.0), 5.0);
-    lit = mix(lit, toLinear(skyR), (0.16 + F*0.8)*(0.35 + 0.65*(1.0 - depth*0.6)));
-    lit *= 0.94 + 0.12*fbm(p*0.018 + vec2(uTime*0.004, 0.0));       // broad wind slicks
+    /* ---- a still lake: no waves. Color from depth, the sandy bed seen through clear
+       shallows with soft drifting light, a thin lapping shoreline, and the sky mirrored
+       on the surface (clouds and stars by position, stronger toward the far edge). ---- */
+    float D = waterDepth(p);
+    float sh = clamp(1.0 - D/7.0, 0.0, 1.0);                       // 1 at the shore, 0 past 7 m
+    vec3 deepC = toLinear(vec3(0.03, 0.25, 0.45)), midC = toLinear(vec3(0.02, 0.50, 0.64)), shalC = toLinear(vec3(0.24, 0.86, 0.82));
+    vec3 color = mix(deepC, midC, smoothstep(0.0, 0.75, sh));
+    color = mix(color, shalC, smoothstep(0.7, 1.0, sh));
+    float ca = textureLod(uCaus, p*0.06 + vec2(uTime*0.012, uTime*0.008), 3.5).r;
+    float cb = textureLod(uCaus, p*0.045 - vec2(uTime*0.009, -uTime*0.011) + 0.37, 3.5).r;
+    float glow = ca*cb;                                              // soft patches of light on the sand
+    vec3 bed = toLinear(mix(vec3(0.78, 0.74, 0.56), vec3(0.88, 0.84, 0.66), vnoise(p*0.22)))*(0.9 + 0.9*glow*sh);   // clean pale sand, soft light patches
+    color = mix(color, bed*vec3(0.62, 0.95, 0.92), pow(sh, 2.2)*0.6);
+    float lap = 0.18 + 0.12*sin(uTime*0.9 + fbm(p*0.15)*6.0);
+    float shape = texture(uFoam, p*0.35 + vec2(uTime*0.02, 0.0)).r;
+    float foam = (1.0 - smoothstep(lap*0.5, lap, D))*smoothstep(0.25, 0.6, shape + 0.35);
+    color = mix(color, vec3(0.92), foam*0.85);
+    vec3 lit = uToon > 0.5
+      ? color*(uAmbient + stepped(max(uLightDir.z, 0.0), DIFFUSE_STEPS, DIFFUSE_SMOOTHNESS)*uLightCol*1.1)
+      : color*(uAmbient + 1.1*max(uLightDir.z, 0.0)*uLightCol);
+    vec3 V = vec3(0.0, -uSinT, uCosT), Rd = reflect(-V, vec3(0.0, 0.0, 1.0));
+    vec3 skyR = min(skyColor(vec3(Rd.x, Rd.z, -Rd.y)), vec3(1.0));
+    float cl = cloudAt(p*0.6 + vec2(0.0, 40.0));
+    skyR = mix(skyR, vec3(0.85)*(0.2 + 0.8*uDay), min(cl*2.5, 1.0)*0.8);
+    skyR += smoothstep(0.9, 0.95, texture(uStars, p*0.012).r)*clamp(-uBlend*2.0, 0.0, 1.0)*0.8;
+    lit = mix(lit, toLinear(skyR), (0.06 + 0.16*(vNdc.y*0.5 + 0.5))*(1.0 - foam));
     lit *= cloudShade(p);
     col = toSrgb(lit);
   }
@@ -1624,6 +1565,7 @@ function updateParticles(dt){
 
 /* ---------- wave simulation driver ---------- */
 let simAcc = 0;
+const RIPPLES = false;                // still water: the wave simulation is off (the wake shows as foam only)
 function gatherSources(rs){
   const src = [];
   const b = boat, fx = -Math.sin(b.th), fy = Math.cos(b.th), nx = Math.cos(b.th), ny = Math.sin(b.th);
@@ -1721,7 +1663,7 @@ function update(dt){
   }
 
   // simulation
-  if (simOK){
+  if (simOK && RIPPLES){
     simAcc += dt; let steps = 0;
     while (simAcc >= SIM_DT && steps < 3){ simStep(gatherSources(rs)); simAcc -= SIM_DT; steps++; }
     if (simAcc > SIM_DT*3) simAcc = 0;
@@ -1769,7 +1711,7 @@ function drawScene(){
   const w = waterProg.u;
   gl.uniform2f(w.uCam, camX, camY); gl.uniform2f(w.uHalf, halfX, halfY);
   gl.uniform1f(w.uTime, time); gl.uniform1f(w.uWorld, SIM_WORLD); gl.uniform1f(w.uSimN, SIM_N);
-  gl.uniform1f(w.uHasSim, simOK ? 1 : 0); gl.uniform1f(w.uToon, toonWater ? 1 : 0);
+  gl.uniform1f(w.uHasSim, simOK && RIPPLES ? 1 : 0); gl.uniform1f(w.uToon, toonWater ? 1 : 0);
   setLight(w);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, simOK ? sim.tex[sim.r] : dummyTex); gl.uniform1i(w.uSim, 0);
   [[waveTex,'uWave'],[waveNormTex,'uWaveN'],[foamTex,'uFoam'],[causTex,'uCaus'],[groundNoiseTex,'uGroundNoise']].forEach(([t, name], i) => {
