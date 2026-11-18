@@ -60,7 +60,7 @@
   <div class="chip"><span class="k">Distance</span><span class="v" id="dist">0 m</span></div>
   <div class="chip"><span class="k">Gates</span><span class="v" id="gates">0</span></div>
   <div class="chip"><span class="k">Speed</span><span class="v" id="spd">0 km/h</span></div>
-  <div class="chip"><span class="k">Hull</span><div class="bar"><i id="hp"></i></div></div>
+  <div class="chip"><span class="k">Hull</span><div class="bar"><i id="hp"></i></div><span class="k" style="margin-top:6px">Boost</span><div class="bar"><i id="boostbar" style="background:#5fd4ff"></i></div></div>
   <div class="chip"><span class="k">Time</span><span class="v" id="clock">06:00</span></div>
 </div>
 <div id="arrow">&#10148;</div>
@@ -71,7 +71,7 @@
     <h1>River Run</h1>
     <p>Lap the island. Thread the buoy gates in order, follow the arrow, stay off the rocks. A full day passes every ten minutes.</p>
     <div class="keys"><b>W</b><b>A</b><b>S</b><b>D</b></div>
-    <p>W throttle, S brake and reverse, A and D steer. T switches between standard and toon water.</p>
+    <p>W throttle, S brake and reverse, A and D steer, Shift boost. T switches between standard and toon water.</p>
     <button class="go" id="go">Loading the forest...</button>
     <p class="credit">Nature models: KayKit Forest Nature Pack by Kay Lousberg (CC0)</p>
   </div>
@@ -539,13 +539,14 @@ vec3 palette(float t){
 }
 
 // Godot uniform defaults, same names. Values changed for the river are marked.
-const vec3  SURFACE_COLOR = vec3(0.2, 1.0, 0.8), DEPTH_COLOR = vec3(0.08, 0.2, 0.4), FOAM_COLOR = vec3(1.0);
-const float DEPTH_SIZE = 4.0;                  // Godot 12 m; this river is about 3.6 m deep
+const vec3  SURFACE_COLOR = vec3(0.24, 0.86, 0.78), DEPTH_COLOR = vec3(0.05, 0.24, 0.38), FOAM_COLOR = vec3(1.0);   // Godot: (0.2,1,0.8) and (0.08,0.2,0.4)
+const float DEPTH_SIZE = 7.5;                  // Godot 12 m; the lake shelves to about 6 m
 const float SURFACE_ROUGHNESS = 0.05, FOAM_ROUGHNESS = 0.05;
 const float CAUSTICS_STRENGTH = 2.0; const vec2 CAUSTICS_SCALE = vec2(0.5);
-const float WAVE_SOFTNESS = 3.0; const vec2 WAVE_SCALE = vec2(0.2), WAVE_LAYER_SCALE = vec2(1.5);
-const float WAVE_HIGHLIGHT = 0.5; const vec2 WAVE_VELOCITY = vec2(0.02);
-const float EDGE_FOAM_DEPTH_SIZE = 1.0, WAVE_FOAM_AMOUNT = 0.8, FOAM_START = 0.15, FOAM_END = 0.3, FOAM_EXPONENT = 2.0;
+const float WAVE_SOFTNESS = 3.0; const vec2 WAVE_SCALE = vec2(0.09), WAVE_LAYER_SCALE = vec2(1.5);   // Godot 0.2: broader swells for a big lake
+const float WAVE_HIGHLIGHT = 0.12;              // Godot 0.5 painted teal blotches over open water
+const vec2 WAVE_VELOCITY = vec2(0.02);
+const float EDGE_FOAM_DEPTH_SIZE = 0.6, WAVE_FOAM_AMOUNT = 0.5, FOAM_START = 0.15, FOAM_END = 0.3, FOAM_EXPONENT = 2.0;
 const float REFRACTION_AMOUNT = 0.5, REFRACTION_EXPONENT = 0.5;
 const float DIFFUSE_STEPS = 12.0, DIFFUSE_SMOOTHNESS = 0.2, SPECULAR_STEPS = 12.0, SPECULAR_SMOOTHNESS = 0.2;
 const float PI = 3.14159265;
@@ -556,7 +557,7 @@ vec3 toSrgb(vec3 c){ return pow(clamp(c, 0.0, 1.0), vec3(1.0/2.2)); }
 // Water depth in meters (negative on land): stands in for Godot's depth buffer read.
 float waterDepth(vec2 p){
   float d = bankD(p);
-  float D = d < 0.0 ? d : 3.6*pow(min(d/3.5, 1.0), 0.6);   // steep banks, deep channel
+  float D = d < 0.0 ? d : 6.0*pow(min(d/14.0, 1.0), 0.65);  // a sandy shelf that drops away over about 14 m
   for (int i=0;i<${MAX_ROCKS};i++){
     if (i >= uRockCount) break;
     D = min(D, (length(p - uRocks[i].xy) - uRocks[i].z)*3.0);
@@ -665,7 +666,7 @@ void main(){
     color = mix(color, foamC, foam);
 
     /* ---- lighting from the dynamic sky ---- */
-    vec3 N = normalize(vec3(nmap.xy - simG*1.2, nmap.z));
+    vec3 N = normalize(vec3(nmap.xy*0.6 - simG*1.2, nmap.z));
     vec3 L = uLightDir, V = vec3(0.0, -uSinT, uCosT), H = normalize(L + V);
     float rough = mix(SURFACE_ROUGHNESS, FOAM_ROUGHNESS, foam);
     float ndl = dot(N, L), ndh = clamp(dot(N, H), 0.0, 1.0);
@@ -680,16 +681,19 @@ void main(){
       lit = color*(uAmbient + (1.0 + color/PI)*l*uLightCol) + (PI + color)*sp*0.5*uLightCol;
     } else {
       // water.gdshader uses Godot's standard lighting: Lambert plus GGX specular
-      float a = max(rough*rough, 0.0025), a2 = a*a;
+      float a = max(rough*rough, 0.03), a2 = a*a;               // wider than Godot's 0.05 roughness: a sheen, not pinpoint glitter
       float dd = ndh*ndh*(a2 - 1.0) + 1.0;
-      float spec = min(a2/(PI*dd*dd)*(0.04 + 0.96*pow(1.0 - clamp(dot(H, V), 0.0, 1.0), 5.0))*0.25*max(ndl, 0.0), 6.0);
-      lit = color*(uAmbient + 1.1*max(ndl, 0.0)*uLightCol) + uLightCol*spec;
+      float spec = min(a2/(PI*dd*dd)*(0.04 + 0.96*pow(1.0 - clamp(dot(H, V), 0.0, 1.0), 5.0))*0.25*max(ndl, 0.0), 1.5);
+      lit = color*(uAmbient + 1.1*max(ndl, 0.0)*uLightCol) + uLightCol*spec*mix(0.35, 1.0, uDay);
     }
-    // the sky (sun, moon, stars, clouds) reflected in the lake
-    vec3 R = reflect(-V, N);
-    vec3 skyR = skyColor(vec3(R.x, R.z, -R.y));
-    float F = 0.02 + 0.98*pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
-    lit = mix(lit, toLinear(min(skyR, vec3(1.0))), 0.12 + F*0.8) + toLinear(min(max(skyR - 1.0, 0.0), vec3(4.0)))*0.2;
+    // the sky (clouds, stars, sky color) reflected in the lake through a calmer normal, so the
+    // reflection reads as a picture instead of glitter; sun and moon glints come from the specular above
+    vec3 Ns = normalize(mix(vec3(0.0, 0.0, 1.0), N, 0.07));
+    vec3 R = reflect(-V, Ns);
+    vec3 skyR = min(skyColor(vec3(R.x, R.z, -R.y)), vec3(1.0));
+    float F = 0.02 + 0.98*pow(1.0 - clamp(dot(Ns, V), 0.0, 1.0), 5.0);
+    lit = mix(lit, toLinear(skyR), (0.16 + F*0.8)*(0.35 + 0.65*(1.0 - depth*0.6)));
+    lit *= 0.94 + 0.12*fbm(p*0.018 + vec2(uTime*0.004, 0.0));       // broad wind slicks
     lit *= cloudShade(p);
     col = toSrgb(lit);
   }
@@ -988,15 +992,20 @@ precision highp float;
 in vec3 aPos; in vec3 aNrm; in vec2 aUv;
 in vec4 iA;          // x, y, z, rotation
 in vec2 iB;          // scale, tint
-uniform vec2 uCam, uHalf; uniform float uSinT, uCosT, uTime, uShadow;
+uniform vec2 uCam, uHalf, uRP; uniform float uSinT, uCosT, uTime, uShadow, uProp;
 uniform vec3 uLightDir;
 out vec2 vUv; out vec3 vN; out vec3 vW; out float vTint;
 void main(){
   float c = cos(iA.w), s = sin(iA.w);
-  vec3 p = aPos*iB.x;
-  p.x += sin(uTime*1.3 + iA.x*0.37 + iA.y*0.21)*0.03*max(p.z - 0.8, 0.0);    // breeze in the canopy
+  vec3 p = aPos*iB.x, nn = aNrm;
+  p.x += uProp*sin(uTime*1.3 + iA.x*0.37 + iA.y*0.21)*0.03*max(p.z - 0.8, 0.0);    // breeze in the canopy
+  if (uProp < 0.5){                                            // the boat pitches and rolls
+    float cp = cos(uRP.y), sp = sin(uRP.y), cr = cos(uRP.x), sr = sin(uRP.x);
+    p = vec3(p.x, cp*p.y - sp*p.z, sp*p.y + cp*p.z); nn = vec3(nn.x, cp*nn.y - sp*nn.z, sp*nn.y + cp*nn.z);
+    p = vec3(cr*p.x + sr*p.z, p.y, -sr*p.x + cr*p.z); nn = vec3(cr*nn.x + sr*nn.z, nn.y, -sr*nn.x + cr*nn.z);
+  }
   vec3 w = vec3(iA.x + c*p.x - s*p.y, iA.y + s*p.x + c*p.y, iA.z + p.z);
-  vN = vec3(c*aNrm.x - s*aNrm.y, s*aNrm.x + c*aNrm.y, aNrm.z);
+  vN = vec3(c*nn.x - s*nn.y, s*nn.x + c*nn.y, nn.z);
   vUv = aUv; vW = w; vTint = iB.y;
   if (uShadow > 0.5){                                          // flatten onto the ground along the light
     float lz = max(uLightDir.z, 0.35);
@@ -1010,7 +1019,7 @@ void main(){
 const MESH_FS = `#version 300 es
 precision highp float;
 in vec2 vUv; in vec3 vN; in vec3 vW; in float vTint; out vec4 o;
-uniform sampler2D uTex; uniform float uShadow, uShadowStrength;
+uniform sampler2D uTex; uniform float uShadow, uShadowStrength, uProp;
 ${WORLD_GLSL}
 ${LIGHT_GLSL}
 ${CLOUD_GLSL}
@@ -1022,7 +1031,8 @@ void main(){
   float ndl = max(dot(n, uLightDir), 0.0);
   vec3 light = uAmbient*(0.65 + 0.35*n.z) + uLightCol*ndl*1.15;
   vec3 col = base*pow(light, vec3(0.4545))*cloudShade(vW.xy);
-  if (vW.z < 0.3 && bankD(vW.xy) > -0.6) col *= mix(0.68, 1.0, smoothstep(-0.02, 0.3, vW.z));   // wet at the waterline
+  if (uProp > 0.5 && vW.z < 0.3 && bankD(vW.xy) > -0.6) col *= mix(0.68, 1.0, smoothstep(-0.02, 0.3, vW.z));   // wet at the waterline
+  if (uProp < 0.5 && vUv.x > 0.5 && vUv.y > 0.5 && vUv.x < 0.75 && vUv.y < 0.75) col = base*1.6;   // thruster rings glow
   o = vec4(col, 1.0);
 }`;
 const COMPOSITE_FS = `#version 300 es
@@ -1200,8 +1210,95 @@ async function loadNature(){
   natureReady = true;
   const go = document.getElementById('go'); if (go) go.textContent = 'Press any movement key to launch';
 }
+/* ---------------- the boat: a low poly 3D hull built in code ----------------
+   Lofted hull with white topsides, a red boot stripe and an antifouling bottom
+   (cut off at the waterline by the mesh shader), a wooden cockpit, console and
+   windshield, a skipper, and two thruster pods with glowing rings.           */
+let boatMesh = null;
+function buildBoat(){
+  const PAL = [[242,240,234],[205,45,38],[178,124,76],[104,70,44], [92,98,110],[48,53,62],[70,120,170],[245,140,40],
+               [236,192,150],[38,52,98],[95,215,255],[118,32,30], [222,218,210],[160,166,172],[255,255,255],[20,20,20]];
+  const V = [];
+  const cellUv = i => [((i % 4) + 0.5)/4, (Math.floor(i/4) + 0.5)/4];
+  function face(pts, col, ref){                                // flat shaded polygon, normal pointing away from ref
+    const [a, b, c] = pts;
+    const u = [b[0]-a[0], b[1]-a[1], b[2]-a[2]], v = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
+    let n = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+    const l = Math.hypot(...n) || 1; n = n.map(x => x/l);
+    const cx = pts.reduce((s, p) => s + p[0], 0)/pts.length, cy = pts.reduce((s, p) => s + p[1], 0)/pts.length, cz = pts.reduce((s, p) => s + p[2], 0)/pts.length;
+    if (n[0]*(cx - ref[0]) + n[1]*(cy - ref[1]) + n[2]*(cz - ref[2]) < 0) n = n.map(x => -x);
+    const [tu, tv] = cellUv(col);
+    for (let k = 1; k < pts.length - 1; k++) for (const p of [pts[0], pts[k], pts[k+1]]) V.push(p[0], p[1], p[2], n[0], n[1], n[2], tu, tv);
+  }
+  function box(x0, x1, y0, y1, z0, z1, col, top){
+    const c = [(x0+x1)/2, (y0+y1)/2, (z0+z1)/2];
+    face([[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0]], col, c); face([[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]], top ?? col, c);
+    face([[x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1]], col, c); face([[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]], col, c);
+    face([[x0,y0,z0],[x0,y1,z0],[x0,y1,z1],[x0,y0,z1]], col, c); face([[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]], col, c);
+  }
+  const N = 14, Y0 = -1.3, Y1 = 1.4;
+  const st = [];
+  for (let i=0;i<=N;i++){
+    const t = i/N, y = Y0 + (Y1 - Y0)*t;
+    const w = 0.62*Math.pow(Math.max(0, 1 - Math.pow(Math.max(0, (t - 0.45)/0.55), 1.8)), 0.75)*(0.88 + 0.12*Math.min(1, t*4));
+    const zd = 0.42 + 0.16*t*t, keel = -0.24*(1 - Math.pow(t, 3)) + 0.06*Math.pow(t, 3);
+    st.push({ y, w, zd, pts: [[-w, y, zd], [-w*0.97, y, 0.1], [-w*0.62, y, -0.13], [0, y, keel], [w*0.62, y, -0.13], [w*0.97, y, 0.1], [w, y, zd]] });
+  }
+  const segCol = [0, 1, 11, 11, 1, 0];                          // topsides white, boot stripe red, bottom dark red
+  for (let i=0;i<N;i++) for (let j=0;j<6;j++){
+    const a = st[i].pts[j], b = st[i].pts[j+1], c = st[i+1].pts[j+1], d = st[i+1].pts[j];
+    face([a, b, c, d], segCol[j], [0, (a[1] + c[1])/2, 0.1]);
+  }
+  face(st[0].pts, 0, [0, 0, 0.1]);                               // transom
+  const FLOOR = 0.24;
+  for (let i=0;i<N;i++){                                         // gunwale cap, inner wall, cockpit floor, foredeck
+    const A = st[i], B = st[i+1], ia = A.w*0.84, ib = B.w*0.84;
+    for (const sg of [-1, 1]){
+      face([[sg*A.w, A.y, A.zd], [sg*ia, A.y, A.zd], [sg*ib, B.y, B.zd], [sg*B.w, B.y, B.zd]], 12, [0, (A.y+B.y)/2, -1]);
+      if (A.y < 0.55) face([[sg*ia, A.y, A.zd], [sg*ia, A.y, FLOOR], [sg*ib, B.y, FLOOR], [sg*ib, B.y, B.zd]], 0, [0, (A.y+B.y)/2, FLOOR + 0.1]);
+    }
+    if (A.y < 0.55) face([[-ia, A.y, FLOOR], [ia, A.y, FLOOR], [ib, B.y, FLOOR], [-ib, B.y, FLOOR]], 2, [0, (A.y+B.y)/2, -1]);
+    else face([[-A.w*0.85, A.y, A.zd], [A.w*0.85, A.y, A.zd], [B.w*0.85, B.y, B.zd], [-B.w*0.85, B.y, B.zd]], 0, [0, (A.y+B.y)/2, -1]);
+  }
+  box(-0.27, 0.27, -0.02, 0.3, FLOOR, FLOOR + 0.4, 0, 12);       // console
+  face([[-0.29, 0.31, FLOOR + 0.4], [0.29, 0.31, FLOOR + 0.4], [0.25, 0.15, FLOOR + 0.66], [-0.25, 0.15, FLOOR + 0.66]], 6, [0, 0, 0]);   // windshield
+  box(-0.12, 0.12, 0.1, 0.2, FLOOR + 0.4, FLOOR + 0.43, 5);      // dashboard
+  box(-0.34, 0.34, -0.62, -0.34, FLOOR, FLOOR + 0.2, 3);         // bench
+  box(-0.34, 0.34, -0.66, -0.6, FLOOR + 0.2, FLOOR + 0.42, 3);   // backrest
+  box(-0.17, 0.17, -0.55, -0.32, FLOOR + 0.2, FLOOR + 0.56, 7);  // skipper: jacket
+  box(-0.09, 0.09, -0.48, -0.32, FLOOR + 0.56, FLOOR + 0.74, 8); // head
+  box(-0.11, 0.11, -0.5, -0.27, FLOOR + 0.74, FLOOR + 0.8, 9);   // cap
+  box(-0.21, -0.13, -0.32, -0.04, FLOOR + 0.42, FLOOR + 0.5, 7); // arms on the wheel
+  box(0.13, 0.21, -0.32, -0.04, FLOOR + 0.42, FLOOR + 0.5, 7);
+  for (const sx of [-0.32, 0.32]){                               // thruster pods with glowing rings
+    box(sx - 0.1, sx + 0.1, -1.46, -1.02, 0.02, 0.27, 4, 13);
+    box(sx - 0.115, sx + 0.115, -1.52, -1.45, 0.005, 0.285, 10);
+    box(sx - 0.04, sx + 0.04, -1.12, -0.98, 0.27, 0.36, 5);      // mount
+  }
+  const data = new Float32Array(V), count = data.length/8, idx = new Uint16Array(count).map((_, i) => i);
+  const vbo = gl.createBuffer(), ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const loc = n => gl.getAttribLocation(meshProg, n);
+  gl.enableVertexAttribArray(loc('aPos')); gl.vertexAttribPointer(loc('aPos'), 3, gl.FLOAT, false, 32, 0);
+  gl.enableVertexAttribArray(loc('aNrm')); gl.vertexAttribPointer(loc('aNrm'), 3, gl.FLOAT, false, 32, 12);
+  gl.enableVertexAttribArray(loc('aUv'));  gl.vertexAttribPointer(loc('aUv'), 2, gl.FLOAT, false, 32, 24);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.enableVertexAttribArray(loc('iA')); gl.vertexAttribDivisor(loc('iA'), 1);
+  gl.enableVertexAttribArray(loc('iB')); gl.vertexAttribDivisor(loc('iB'), 1);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  const px = new Uint8Array(64); PAL.forEach((c, i) => px.set([c[0], c[1], c[2], 255], i*4));
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  boatMesh = { vao, count, tex, iA: loc('iA'), iB: loc('iB') };
+}
+
 function drawMeshes(shadowPass, camX, camY, halfX, halfY){
-  if (!nature) return;
+  if (!boatMesh) buildBoat();
+  if (!nature){ drawBoat(shadowPass, camX, camY, halfX, halfY); return; }
   const gy = halfY/COS_T, m = shadowPass ? 30 : 4;
   const vis = gridQuery(propGrid, camX - halfX - m, camY - gy - m - 12, camX + halfX + m, camY + gy + m, []);
   const buckets = new Map();
@@ -1217,6 +1314,7 @@ function drawMeshes(shadowPass, camX, camY, halfX, halfY){
   const u = meshProg.u;
   gl.uniform2f(u.uCam, camX, camY); gl.uniform2f(u.uHalf, halfX, halfY);
   gl.uniform1f(u.uTime, time); gl.uniform1f(u.uShadow, shadowPass ? 1 : 0); gl.uniform1f(u.uShadowStrength, SKY.shadow);
+  gl.uniform1f(u.uProp, 1); gl.uniform2f(u.uRP, 0, 0);
   setLight(u);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, nature.tex); gl.uniform1i(u.uTex, 0);
   bindSkyTextures(u, 1);
@@ -1228,6 +1326,26 @@ function drawMeshes(shadowPass, camX, camY, halfX, halfY){
     gl.vertexAttribPointer(nature.iB, 2, gl.FLOAT, false, 24, start*24 + 16);
     gl.drawElementsInstanced(gl.TRIANGLES, md.indices, gl.UNSIGNED_SHORT, md.istart*2, count);
   }
+  gl.bindVertexArray(null);
+  drawBoat(shadowPass, camX, camY, halfX, halfY);
+}
+function drawBoat(shadowPass, camX, camY, halfX, halfY){
+  if (state === 'over' && boat.sink > 1.2) return;
+  const o = MAX_INST - 1;
+  instData.set([boat.x, boat.y, 0.02*Math.sin(time*2.3) - (boat.sink || 0)*0.35, boat.th, 1.0, 1.0], o*6);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferSubData(gl.ARRAY_BUFFER, o*24, instData, o*6, 6);
+  gl.useProgram(meshProg);
+  const u = meshProg.u;
+  gl.uniform2f(u.uCam, camX, camY); gl.uniform2f(u.uHalf, halfX, halfY);
+  gl.uniform1f(u.uTime, time); gl.uniform1f(u.uShadow, shadowPass ? 1 : 0); gl.uniform1f(u.uShadowStrength, SKY.shadow);
+  gl.uniform1f(u.uProp, 0); gl.uniform2f(u.uRP, boat.roll, boat.pitch);
+  setLight(u); bindSkyTextures(u, 1);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, boatMesh.tex); gl.uniform1i(u.uTex, 0);
+  gl.bindVertexArray(boatMesh.vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.vertexAttribPointer(boatMesh.iA, 4, gl.FLOAT, false, 24, o*24);
+  gl.vertexAttribPointer(boatMesh.iB, 2, gl.FLOAT, false, 24, o*24 + 16);
+  gl.drawElementsInstanced(gl.TRIANGLES, boatMesh.count, gl.UNSIGNED_SHORT, 0, 1);
   gl.bindVertexArray(null);
 }
 
@@ -1296,18 +1414,18 @@ function updateSparks(dt){
    Game state and physics
    ====================================================================== */
 const START_Y = 0;
-const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, hp:100, steer:0, throttle:0, flash:0 };
+const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, hp:100, steer:0, throttle:0, flash:0, roll:0, pitch:0, boost:1, boosting:false, sink:0 };
 let state = 'ready';                 // ready | run | over
 let time = 0, score = { gates:0, dist:0 };
 let best = 0;
 try { best = +localStorage.getItem('riverrun.best') || 0; } catch(e) {}
-const input = { up:false, down:false, left:false, right:false };
+const input = { up:false, down:false, left:false, right:false, boost:false };
 const cam = { x:0, y:0, half:14, shake:0 };
 const particles = [];
 
 function resetGame(){
   boat.x = spawn.x; boat.y = spawn.y; boat.th = spawn.th; boat.vx = 0; boat.vy = 0; boat.w = 0;
-  boat.hp = 100; boat.steer = 0; boat.throttle = 0; boat.flash = 0;
+  boat.hp = 100; boat.steer = 0; boat.throttle = 0; boat.flash = 0; boat.roll = 0; boat.pitch = 0; boat.boost = 1; boat.sink = 0;
   score = { gates:0, dist:0 }; nextGate = 0; lap = 0;
   particles.length = 0; sparks.length = 0;
   cam.x = boat.x; cam.y = boat.y + 5; cam.shake = 0;
@@ -1337,7 +1455,7 @@ function waterVel(x, y, obs){
   return [ux, uy];
 }
 
-const THRUST = 7.0, THRUST_REV = 3.2, INERTIA = 0.64;
+const THRUST = 8.5, THRUST_REV = 3.6, BOOST = 1.75, INERTIA = 0.64;
 const hullPts = [[0,0.85],[0,0],[0,-0.85]], HULL_R = 0.55;
 let near = [];
 
@@ -1372,13 +1490,15 @@ function stepBoat(dt, controlled){
   const rvx = b.vx - u[0], rvy = b.vy - u[1];
   const vf = rvx*fx + rvy*fy, vl = rvx*nx + rvy*ny;
   const thr = controlled ? b.throttle : 0;
-  const thrust = thr > 0 ? thr*THRUST : thr*THRUST_REV;
+  const thrust = thr > 0 ? thr*THRUST*(b.boosting ? BOOST : 1) : thr*THRUST_REV;
   const Ff = thrust - (0.35 + 0.08*Math.abs(vf))*vf;           // long axis: slippery
-  const Fl = -(4.6 + 0.8*Math.abs(vl))*vl;                     // sideways: keel bites
+  const grip = b.boosting ? 2.6 : 4.6;                         // boosting loosens the keel: the stern slides out
+  const Fl = -(grip + 0.8*Math.abs(vl))*vl;
   b.vx += (Ff*fx + Fl*nx)*dt; b.vy += (Ff*fy + Fl*ny)*dt;
   const rudder = Math.min(1, (Math.abs(vf) + Math.abs(thrust)*0.6)/4);
   const dir = vf < -0.4 ? -1 : 1;
-  const torque = (controlled ? b.steer : 0) * 6.2 * (0.3 + 0.7*rudder) * dir - 2.7*b.w - 0.3*vl*(vf >= 0 ? 1 : -1);
+  // jets give steering even when slow; at speed the rudder takes over and yaw is capped so turns stay controllable
+  const torque = (controlled ? b.steer : 0) * 7.5 * (0.45 + 0.55*rudder) * dir * (1 - 0.25*Math.min(1, Math.abs(vf)/10)) - 3.1*b.w - 0.3*vl*(vf >= 0 ? 1 : -1);
   b.w += torque*dt;
   b.x += b.vx*dt; b.y += b.vy*dt; b.th += b.w*dt;
 
@@ -1512,8 +1632,11 @@ function update(dt){
   updateSparks(dt);
   const target = (input.up ? 1 : 0) - (input.down ? 1 : 0);
   const steerT = (input.left ? 1 : 0) - (input.right ? 1 : 0);
-  boat.throttle += (target - boat.throttle)*Math.min(1, dt*5);
-  boat.steer    += (steerT - boat.steer)*Math.min(1, dt*7);
+  boat.throttle += (target - boat.throttle)*Math.min(1, dt*(Math.abs(target) > Math.abs(boat.throttle) ? 4 : 7));
+  boat.steer    += (steerT - boat.steer)*Math.min(1, dt*(steerT === 0 ? 12 : 9));
+  boat.boosting = input.boost && boat.boost > 0.02 && boat.throttle > 0.3 && state === 'run';
+  boat.boost = Math.min(1, Math.max(0, boat.boost + (boat.boosting ? -0.32 : 0.14)*dt));
+  if (state === 'over') boat.sink += dt;
   boat.flash = Math.max(0, boat.flash - dt*2.5);
   near = obstaclesNear(boat.x, boat.y, 28);
 
@@ -1530,6 +1653,9 @@ function update(dt){
   const u = waterVel(boat.x, boat.y, near);
   const rvx = boat.vx - u[0], rvy = boat.vy - u[1], rs = Math.hypot(rvx, rvy);
   const fx = -Math.sin(boat.th), fy = Math.cos(boat.th), nx = Math.cos(boat.th), ny = Math.sin(boat.th);
+  const vfwd = rvx*fx + rvy*fy;                                // the hull banks into turns and lifts its bow with speed
+  boat.roll  += (-boat.steer*Math.min(1, Math.abs(vfwd)/6)*0.14 - boat.w*0.02 - boat.roll)*Math.min(1, dt*4);
+  boat.pitch += (0.05*Math.min(1, Math.max(0, vfwd)/8) + 0.035*Math.max(0, boat.throttle) + (boat.boosting ? 0.03 : 0) - boat.pitch)*Math.min(1, dt*3);
   const rate = (rs*5 + Math.abs(boat.throttle)*14) * dt;
   let nspawn = Math.floor(rate + Math.random());
   while (nspawn-- > 0 && state !== 'over'){
@@ -1564,7 +1690,7 @@ function update(dt){
   const aspect = canvas.width/Math.max(1, canvas.height);
   const halfT = Math.max(14 + speed*0.5, 11/aspect);
   cam.half += (halfT - cam.half)*(1 - Math.exp(-dt*2.2));
-  const tx = boat.x + boat.vx*0.25, ty = boat.y + 3.5 + boat.vy*0.3;
+  const tx = boat.x + boat.vx*0.45, ty = boat.y + 2.5 + boat.vy*0.5;   // look further ahead along the travel direction
   const kk = 1 - Math.exp(-dt*4.5);
   cam.x += (tx - cam.x)*kk; cam.y += (ty - cam.y)*kk;
   cam.shake = Math.max(0, cam.shake - dt*2.2);
@@ -1585,7 +1711,7 @@ function drawScene(){
   gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
   gl.viewport(0, 0, shadowW, shadowH);
   gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-  if (nature && SKY.shadow > 0.01){
+  if (SKY.shadow > 0.01){
     gl.enable(gl.BLEND); gl.blendEquation(gl.MAX); gl.blendFunc(gl.ONE, gl.ONE);
     drawMeshes(true, camX, camY, halfX, halfY);
     gl.blendEquation(gl.FUNC_ADD); gl.disable(gl.BLEND);
@@ -1645,8 +1771,6 @@ function drawScene(){
     const id = o.gate === nextGate ? o.buoy : (o.gate < nextGate ? 2 : 3);
     pushSprite(o.x, o.y, 0.75, 0, 3, (o.x*0.37 + o.y*0.11) % 1, id, 0, 0, 0);
   }
-  pushSprite(boat.x + 0.35, boat.y - 0.45, 2.1, boat.th, 5, 0, 0, 0, 0, 0);
-  pushSprite(boat.x, boat.y, 2.1, boat.th, 4, 0, boat.steer, 0, boat.flash, 0);
   const normalCount = sprCount;
 
   // glow pass content: next gate marker, jet light on the water, beams, flares, balls, sparks
@@ -1654,7 +1778,7 @@ function drawScene(){
   if (ng && state !== 'over') pushQuad(ng.x, ng.y, ng.gap, 0.3, Math.atan2(ng.rad[1], ng.rad[0]), 12, 0, 0, 0, 0, 0);
   if (state !== 'over'){
     const rev = boat.throttle < -0.05;
-    const open = rev ? Math.min(1, -boat.throttle*0.7) : Math.max(0, boat.throttle)*0.85 + (state === 'run' ? 0.12 : 0.06);
+    const open = rev ? Math.min(1, -boat.throttle*0.7) : Math.max(0, boat.throttle)*(boat.boosting ? 1.25 : 0.85) + (state === 'run' ? 0.12 : 0.06);
     const dirTh = boat.th + (rev ? Math.PI : 0) - boat.steer*0.3;
     const ax = -Math.sin(dirTh), ay = Math.cos(dirTh);
     const fx = -Math.sin(boat.th), fy = Math.cos(boat.th), rx = Math.cos(boat.th), ry = Math.sin(boat.th);
@@ -1681,7 +1805,7 @@ function drawScene(){
   gl.drawArrays(gl.TRIANGLES, 0, normalCount*6);
 
   // 5. model shadows multiplied over everything drawn so far
-  if (nature && SKY.shadow > 0.01){
+  if (SKY.shadow > 0.01){
     gl.useProgram(compProg); gl.bindVertexArray(emptyVao);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, shadowTex); gl.uniform1i(compProg.u.uShadowTex, 0);
     gl.blendFunc(gl.ZERO, gl.SRC_COLOR);
@@ -1695,11 +1819,9 @@ function drawScene(){
   gl.disable(gl.BLEND);
 
   // 7. trees, bushes and rocks, depth tested against each other
-  if (nature){
-    gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
-    drawMeshes(false, camX, camY, halfX, halfY);
-    gl.disable(gl.DEPTH_TEST);
-  }
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+  drawMeshes(false, camX, camY, halfX, halfY);
+  gl.disable(gl.DEPTH_TEST);
   updateArrow(camX, camY, halfX, halfY);
 }
 
@@ -1724,6 +1846,7 @@ function updateHud(force){
   setText('spd', Math.round(Math.hypot(boat.vx, boat.vy)*3.6) + ' km/h');
   const hrs = (6 + skyClock/CYCLE*24) % 24;
   setText('clock', String(Math.floor(hrs)).padStart(2, '0') + ':' + String(Math.floor((hrs % 1)*60)).padStart(2, '0') + (SKY.sun[2] >= 0 ? ' \u2600' : ' \u263E'));
+  el('boostbar').style.width = Math.round(boat.boost*100) + '%';
   const hp = Math.round(boat.hp);
   if (force || hudCache.hp !== hp){
     hudCache.hp = hp; const bar = el('hp'); bar.style.width = hp + '%';
@@ -1737,11 +1860,11 @@ function toast(msg, bad){
 }
 
 /* ---------- input ---------- */
-const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right' };
+const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right', ShiftLeft:'boost', ShiftRight:'boost' };
 addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT'){ if (e.code === 'Enter') submitScore(); return; }   // typing a name
   const k = keymap[e.code];
-  if (k){ input[k] = true; e.preventDefault(); if (state === 'ready') startGame(); }
+  if (k){ input[k] = true; e.preventDefault(); if (state === 'ready' && k !== 'boost') startGame(); }
   else if (e.code === 'KeyT'){ toonWater = !toonWater; toast(toonWater ? 'Toon water' : 'Standard water'); try { localStorage.setItem('riverrun.water', toonWater ? 'toon' : 'standard'); } catch(err) {} }
   else if (e.code === 'KeyR' || (state === 'over' && (e.code === 'Space' || e.code === 'Enter'))){ resetGame(); startGame(); }
 });
@@ -1781,7 +1904,7 @@ requestAnimationFrame(frame);
 
 // Handle for automated checks.
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; }, get score(){ return score; },
-  startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, baseFlow,
+  startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, step(dt){ update(dt); }, baseFlow,
   get gates(){ return gates; }, get nextGate(){ return nextGate; }, get props(){ return props.length; }, get ready(){ return natureReady; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; }, setToon(v){ toonWater = v; } };
 })();
 </script>
