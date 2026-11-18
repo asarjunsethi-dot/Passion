@@ -27,7 +27,8 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
   free rein on water and fine ripples, caustics and shore ripples came back; thrusters must only fire from the stern;
   thrusters must look realistic (water jet spray, not lasers); boats cannot reverse (S only brakes); minimal popups;
   no graphics or pixel controls; controls live behind a small "?" button; splashes include droplets;
-  multiplayer added so the owner can see other people playing.
+  multiplayer added so the owner can see other people playing; players can enter a name; inactive players
+  drop off the list after 5 minutes.
 
 ## Map of `web/index.html` (search for these markers)
 
@@ -50,7 +51,8 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
 | Multiplayer | `NET_URL`, `netConnect`, `netMessage`, `remoteState`, `updateRemotes`, `netSend` | Supabase Realtime channel `river-run-<seed>`, raw Phoenix protocol over a WebSocket. Presence lists who is online; broadcasts carry boat state. See below. |
 | Watching | `followed`, `setWatching`, `cycleWatch`, `updateTags` | F (or clicking the "other sailors" line under the clock) cycles the camera through other sailors and back. Any movement key returns to your boat. Name tags sit over boats, or at the screen edge pointing to them. |
 | Render order | `drawScene` | 1 shadow buffer, 2 water and ground, 3 grass, 4 foam, 5 shadow multiply, 6 meshes, 7 spray, then tags. |
-| Interface | `#speedo`, `#clockbox`, `#netbox`, `#tags`, `#helpbtn`, `#helppanel`, `#start` | Speed of the followed boat and your boost, clock, sailor count, "?" controls list (H toggles). |
+| Interface | `#speedo`, `#clockbox`, `#netbox`, `#tags`, `#helpbtn`, `#helppanel`, `#start`, `#nick` | Speed of the followed boat and your boost, clock, sailor count, "?" controls list (H toggles). `#nick` is the name field on the start screen (`setName`), saved on the device; empty keeps a random "Sailor NN". |
+| Away | `AWAY_MS`, `markActive`, `away` | After 5 minutes without a key, click, touch or mouse movement you leave the other sailors' list (presence untrack) and stop sending, but still see them. Any input rejoins at once. A hidden tab counts as inactive. |
 | Render scale | `adaptScale`, `resize`, `pixelCap` | Automatic: starts at 2.3 million pixels, drops a fifth after 2 slow seconds (down to 0.6 million), climbs back after 8 smooth seconds but never above a budget that was slow. |
 
 Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, F watch others, H help, R reset.
@@ -62,7 +64,8 @@ URL options: `?seed=N` (lake N, private room), `?name=Ana` (name shown to others
   `vsn=1.0.0`, heartbeat every 25 seconds, reconnect with backoff (1, 2, 4 ... 30 seconds).
 - Message: `{i: id, n: name, d: [x, y, heading, z, vz, vx, vy, yaw rate, roll, pitch, throttle, steer, strafe, boat, flags]}`,
   flags 1 boosting, 2 sailing, 4 jumping. Every field is validated and clamped on receipt; names are stripped to 16 characters.
-- Rate: nothing while alone. With company, up to 10 per second, lowered to keep a crowd near 60 deliveries a second,
+- A rename arrives from the service as a join plus a leave for the same player in one message; leaves that the same message rejoins are ignored.
+- Rate: nothing while alone or away. With company, up to 10 per second, lowered to keep a crowd near 60 deliveries a second,
   and 1 per second while moored or idle.
 - Cost: Supabase counts each broadcast once sent plus once per receiver. Free plan quota is 2 million a month, so two
   players sailing nonstop use about 40 a second, roughly 14 hours of shared play a month. Watch the usage page.
@@ -71,7 +74,7 @@ URL options: `?seed=N` (lake N, private room), `?name=Ana` (name shown to others
 ## Testing
 
 Debug handle: `window.__river` exposes `boat`, `cam`, `input`, `state`, `ready`, `floaters`, `seed`, `pixelCap`,
-`id`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
+`id`, `away`, `setIdle(ms)`, `setName(name)`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
 (update and draw), `step(dt)` (physics only, fast), `setClock(seconds)`, `startGame()`, `resetGame()`, `bankDist(x, y)`.
 
 ```bash
@@ -84,7 +87,7 @@ NODE_PATH=$(npm root -g) node tools/tests/shore.js name 150 boat 0 13
 
 Scripts in `tools/tests/`: `shore.js` (screenshot: name, clock seconds, camera x or `boat`, y, half height),
 `modes.js` (strafe, spin, brake, jump), `boats.js` and `five.js` (boat speeds and close ups), `balls.js` (ramming),
-`multiplayer.js` (two browsers on one lake through the live Supabase service; needs the session network to allow
+`names.js` (name entry and the away rule, live), `multiplayer.js` (two browsers on one lake through the live Supabase service; needs the session network to allow
 `yghxquvblqkqyzqjfvbx.supabase.co`, which the cloud environment "Passion (River Run)" does).
 Headless Chromium uses SwiftShader, so it is slow: prefer `step()` for physics and take few screenshots.
 

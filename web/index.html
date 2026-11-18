@@ -40,6 +40,10 @@
   #boatsel{display:flex;gap:18px;justify-content:center;font-size:13px;letter-spacing:.06em}
   #boatsel span{opacity:.55;cursor:pointer;padding-bottom:3px;border-bottom:1px solid transparent}
   #boatsel span.on{opacity:1;border-bottom-color:#fff}
+  #nick{display:block;margin:14px auto 0;width:150px;padding:3px 0;border:0;border-bottom:1px solid rgba(255,255,255,.35);background:transparent;
+    color:#fff;font:13px/1.4 inherit;font-family:inherit;letter-spacing:.06em;text-align:center;outline:none;-webkit-user-select:text;user-select:text}
+  #nick:focus{border-bottom-color:#fff}
+  #nick::placeholder{color:rgba(255,255,255,.55)}
   .intro .hint{margin:16px 0 0;font-size:12px;opacity:.7;letter-spacing:.1em;cursor:pointer}
   .hide{display:none!important}
   #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
@@ -65,6 +69,7 @@
   <div class="intro">
     <h1>River Run</h1>
     <div id="boatsel"></div>
+    <input id="nick" maxlength="16" placeholder="your name" autocomplete="off" spellcheck="false" aria-label="Your name">
     <p class="hint" id="go">press W to sail</p>
   </div>
 </div>
@@ -1478,6 +1483,35 @@ function netConnect(){
   ws.onclose = () => { if (net.ws !== ws) return; netDrop(); netRetry(); };
   ws.onerror = () => {};                                      // onclose follows and schedules the retry
 }
+function netTrack(){ netPush('presence', { type: 'presence', event: 'track', payload: { n: myName } }, String(++net.ref)); }
+
+/* Away after 5 minutes without a key, click or touch: you leave the other sailors' list and stop
+   sending, but still see them (watching counts as away). Any input brings you back at once. */
+const AWAY_MS = 5*60*1000;
+let lastInput = Date.now(), away = false;
+function markActive(){
+  lastInput = Date.now();
+  if (!away) return;
+  away = false; net.sendAcc = 1;
+  if (net.joined) netTrack();
+}
+setInterval(() => {
+  for (const k in input) if (input[k]) lastInput = Date.now();   // holding a key down is activity
+  if (!away && Date.now() - lastInput > AWAY_MS){
+    away = true;
+    if (net.joined) netPush('presence', { type: 'presence', event: 'untrack' }, String(++net.ref));
+  }
+}, 5000);
+['keydown', 'pointerdown', 'pointermove', 'wheel'].forEach(t => addEventListener(t, markActive, { passive: true }));
+
+function setName(v){
+  const n = cleanName(v);
+  if (!n || n === myName) return;
+  myName = n;
+  try { localStorage.setItem('riverrun.name', n); } catch(e) {}
+  net.sendAcc = 1;
+  if (net.joined && !away) netTrack();                        // others see the new name straight away
+}
 function netRaw(m){ if (net.ws && net.ws.readyState === 1) net.ws.send(JSON.stringify(m)); }
 function netPush(event, payload, ref){ netRaw({ topic: NET_TOPIC, event, payload, ref: ref || null, join_ref: net.joinRef }); }
 function netDrop(){
@@ -1493,14 +1527,15 @@ function netMessage(m){
   if (m.event === 'broadcast'){ if (p.event === 's') remoteState(p.payload); return; }
   if (m.event === 'presence_state'){ for (const k in p) presenceJoin(k, p[k]); return; }
   if (m.event === 'presence_diff'){
-    for (const k in (p.joins || {})) presenceJoin(k, p.joins[k]);
-    for (const k in (p.leaves || {})) presenceLeave(k);
+    const joins = p.joins || {};
+    for (const k in joins) presenceJoin(k, joins[k]);
+    for (const k in (p.leaves || {})) if (!(k in joins)) presenceLeave(k);   // a rename arrives as a join plus a leave
     return;
   }
   if (m.event === 'phx_reply' && m.ref === net.joinRef){
     if (p.status === 'ok'){
       net.joined = true; net.status = 'on'; net.retry = 0; net.sendAcc = 1;
-      netPush('presence', { type: 'presence', event: 'track', payload: { n: myName } }, String(++net.ref));
+      if (!away) netTrack();
     } else { net.status = 'refused'; try { net.ws.close(); } catch(e) {} }
     return;
   }
@@ -1576,7 +1611,7 @@ function updateRemotes(dt){
   }
 }
 function netSend(dt){
-  if (!net.joined || !online.size) return;                   // alone on the lake: send nothing
+  if (!net.joined || !online.size || away) return;           // alone on the lake, or away: send nothing
   const n = online.size + 1;
   const busy = Math.hypot(boat.vx, boat.vy) > 0.05 || Math.abs(boat.w) > 0.02 || boat.z > 0 || Math.abs(boat.throttle) > 0.02
             || Math.abs(boat.steer) > 0.05 || Math.abs(boat.strafe) > 0.05 || boat.jumpT > 0;
@@ -1845,6 +1880,10 @@ addEventListener('blur', () => { for (const k in input) input[k] = false; });
 el('go').addEventListener('click', startGame);
 el('helpbtn').addEventListener('click', e => { el('helppanel').classList.toggle('hide'); e.currentTarget.blur(); });
 el('netbox').addEventListener('click', cycleWatch);
+const nick = el('nick');
+nick.value = myName;
+nick.addEventListener('change', () => { setName(nick.value); nick.value = myName; });
+nick.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === 'Escape'){ setName(nick.value); nick.value = myName; nick.blur(); } });
 el('boatsel').addEventListener('click', e => { const i = e.target.dataset && e.target.dataset.i; if (i !== undefined) selectBoat(+i); });
 document.querySelectorAll('#touch button').forEach(b => {
   const k = b.dataset.k;
@@ -1889,7 +1928,7 @@ netConnect();
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; },
   startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, step(dt){ update(dt); }, baseFlow,
   get floaters(){ return floaters; }, get ready(){ return true; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; },
-  get seed(){ return SEED; }, get pixelCap(){ return pixelCap; }, id: myId, get watching(){ return watching; }, watch: cycleWatch,
+  get seed(){ return SEED; }, get away(){ return away; }, setIdle(ms){ lastInput = Date.now() - ms; }, setName, get pixelCap(){ return pixelCap; }, id: myId, get watching(){ return watching; }, watch: cycleWatch,
   get net(){ return { status: net.status, joined: net.joined, sent: net.sent, recv: net.recv, online: [...online.values()],
     remotes: [...remotes.values()].filter(r => r.shown).map(r => ({ id: r.id, name: r.name, b: r.b, x: r.x, y: r.y, th: r.th, z: r.z })) }; } };
 })();
