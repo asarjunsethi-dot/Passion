@@ -45,6 +45,8 @@
   #arrow{position:fixed;left:0;top:0;width:36px;height:36px;display:none;color:var(--accent);font-size:30px;line-height:36px;text-align:center;
     text-shadow:0 2px 8px rgba(0,0,0,.6);pointer-events:none;transform-origin:18px 18px}
   .credit{font-size:12px;opacity:.7}
+  #keyhelp{position:fixed;left:16px;bottom:14px;font-size:12px;color:var(--ink2);background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:6px 10px;pointer-events:none}
+  @media (pointer:coarse){#keyhelp{display:none}}
   .hide{display:none!important}
   #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
   #touch{position:fixed;left:0;right:0;bottom:18px;display:none;justify-content:space-between;padding:0 18px;pointer-events:none}
@@ -64,6 +66,7 @@
   <div class="chip"><span class="k">Time</span><span class="v" id="clock">06:00</span></div>
 </div>
 <div id="arrow">&#10148;</div>
+<div id="keyhelp">W/S thrust &nbsp; A/D steer &nbsp; Q/E strafe &nbsp; Shift boost &nbsp; Space jump</div>
 <div id="toast"></div>
 
 <div id="start" class="panel">
@@ -71,7 +74,7 @@
     <h1>River Run</h1>
     <p>An open lake to roam. Circle the island, drift with boost, ram the floating buoys around. A full day passes every ten minutes.</p>
     <div class="keys"><b>W</b><b>A</b><b>S</b><b>D</b></div>
-    <p>W throttle, S brake and reverse, A and D steer, Shift boost, R back to the start. T switches the water style.</p>
+    <p>W throttle, S reverse thrust, A and D steer (spin in place when slow), Q and E strafe, Shift boost, Space jump, R back to the start. T switches the water style.</p>
     <button class="go" id="go">Loading the forest...</button>
   </div>
 </div>
@@ -571,7 +574,7 @@ vec4 sampleWave(sampler2D tex, vec2 p, vec2 disp, vec2 jit){
 }
 vec3 sampleCaustics(vec2 uv){
   uv *= CAUSTICS_SCALE;
-  return vec3(texture(uCaus, uv).r, texture(uCaus, uv + vec2(0.02,0.02)).r, texture(uCaus, uv + vec2(0.03,0.01)).r);
+  return vec3(texture(uCaus, uv).r, texture(uCaus, uv + vec2(0.006,0.006)).r, texture(uCaus, uv + vec2(0.009,0.003)).r);   // Godot splits 0.02/0.03: rainbow fringes up close
 }
 
 // What lies under the water (Godot refracts the screen texture for this).
@@ -1003,7 +1006,7 @@ void main(){
   vec3 light = uAmbient*(0.65 + 0.35*n.z) + uLightCol*ndl*1.15;
   vec3 col = base*pow(light, vec3(0.4545))*cloudShade(vW.xy);
   if (uProp > 0.5 && vW.z < 0.3 && bankD(vW.xy) > -0.6) col *= mix(0.68, 1.0, smoothstep(-0.02, 0.3, vW.z));   // wet at the waterline
-  if (uProp < 0.5 && vUv.x > 0.5 && vUv.y > 0.5 && vUv.x < 0.75 && vUv.y < 0.75) col = base*1.6;   // thruster rings glow
+  if (uProp < 0.5 && vUv.y > 0.75) col = base*(1.4 + 0.8*(1.0 - uDay));   // thruster rings and navigation lights glow
   o = vec4(col, 1.0);
 }`;
 const COMPOSITE_FS = `#version 300 es
@@ -1187,19 +1190,20 @@ async function loadNature(){
    windshield, a skipper, and two thruster pods with glowing rings.           */
 let boatMesh = null;
 function buildBoat(){
-  const PAL = [[242,240,234],[205,45,38],[178,124,76],[104,70,44], [92,98,110],[48,53,62],[70,120,170],[245,140,40],
-               [236,192,150],[38,52,98],[95,215,255],[118,32,30], [222,218,210],[160,166,172],[255,255,255],[20,20,20]];
+  // palette: rows 0 to 2 are lit materials, row 3 glows (thruster rings, navigation lights)
+  const PAL = [[244,243,238],[28,45,88],[170,112,64],[110,70,40], [120,128,140],[45,50,58],[60,110,160],[240,130,40],
+               [232,186,148],[230,222,200],[190,196,204],[90,30,32], [95,215,255],[255,60,50],[60,255,120],[255,250,230]];
   const V = [];
   const cellUv = i => [((i % 4) + 0.5)/4, (Math.floor(i/4) + 0.5)/4];
-  function face(pts, col, ref){                                // flat shaded polygon, normal pointing away from ref
-    const [a, b, c] = pts;
-    const u = [b[0]-a[0], b[1]-a[1], b[2]-a[2]], v = [c[0]-a[0], c[1]-a[1], c[2]-a[2]];
-    let n = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
-    const l = Math.hypot(...n) || 1; n = n.map(x => x/l);
-    const cx = pts.reduce((s, p) => s + p[0], 0)/pts.length, cy = pts.reduce((s, p) => s + p[1], 0)/pts.length, cz = pts.reduce((s, p) => s + p[2], 0)/pts.length;
-    if (n[0]*(cx - ref[0]) + n[1]*(cy - ref[1]) + n[2]*(cz - ref[2]) < 0) n = n.map(x => -x);
-    const [tu, tv] = cellUv(col);
-    for (let k = 1; k < pts.length - 1; k++) for (const p of [pts[0], pts[k], pts[k+1]]) V.push(p[0], p[1], p[2], n[0], n[1], n[2], tu, tv);
+  const tri = (a, b, c, na, nb, nc, col) => { const [u, v] = cellUv(col); for (const [p, n] of [[a, na], [b, nb], [c, nc]]) V.push(p[0], p[1], p[2], n[0], n[1], n[2], u, v); };
+  const norm = n => { const l = Math.hypot(n[0], n[1], n[2]) || 1; return [n[0]/l, n[1]/l, n[2]/l]; };
+  const cross = (u, v) => [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+  const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+  function face(pts, col, ref){                                 // flat shaded polygon facing away from ref
+    let n = norm(cross(sub(pts[1], pts[0]), sub(pts[2], pts[0])));
+    const c = [0, 1, 2].map(k => pts.reduce((s, p) => s + p[k], 0)/pts.length);
+    if (n[0]*(c[0]-ref[0]) + n[1]*(c[1]-ref[1]) + n[2]*(c[2]-ref[2]) < 0) n = n.map(x => -x);
+    for (let k = 1; k < pts.length - 1; k++) tri(pts[0], pts[k], pts[k+1], n, n, n, col);
   }
   function box(x0, x1, y0, y1, z0, z1, col, top){
     const c = [(x0+x1)/2, (y0+y1)/2, (z0+z1)/2];
@@ -1207,45 +1211,102 @@ function buildBoat(){
     face([[x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1]], col, c); face([[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]], col, c);
     face([[x0,y0,z0],[x0,y1,z0],[x0,y1,z1],[x0,y0,z1]], col, c); face([[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]], col, c);
   }
-  const N = 14, Y0 = -1.3, Y1 = 1.4;
-  const st = [];
-  for (let i=0;i<=N;i++){
-    const t = i/N, y = Y0 + (Y1 - Y0)*t;
-    const w = 0.62*Math.pow(Math.max(0, 1 - Math.pow(Math.max(0, (t - 0.45)/0.55), 1.8)), 0.75)*(0.88 + 0.12*Math.min(1, t*4));
-    const zd = 0.42 + 0.16*t*t, keel = -0.24*(1 - Math.pow(t, 3)) + 0.06*Math.pow(t, 3);
-    st.push({ y, w, zd, pts: [[-w, y, zd], [-w*0.97, y, 0.1], [-w*0.62, y, -0.13], [0, y, keel], [w*0.62, y, -0.13], [w*0.97, y, 0.1], [w, y, zd]] });
+  function rail(a, b, r, col){                                   // thin square tube between two points
+    const d = norm(sub(b, a)), up = Math.abs(d[2]) > 0.9 ? [1, 0, 0] : [0, 0, 1];
+    const u = norm(cross(d, up)), w = cross(d, u);
+    const q = (p, su, sw) => [p[0] + (u[0]*su + w[0]*sw)*r, p[1] + (u[1]*su + w[1]*sw)*r, p[2] + (u[2]*su + w[2]*sw)*r];
+    const ring = [[1,1],[-1,1],[-1,-1],[1,-1]];
+    const m = [(a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2];
+    for (let k=0;k<4;k++){ const [s1, w1] = ring[k], [s2, w2] = ring[(k+1)%4]; face([q(a,s1,w1), q(a,s2,w2), q(b,s2,w2), q(b,s1,w1)], col, m); }
   }
-  const segCol = [0, 1, 11, 11, 1, 0];                          // topsides white, boot stripe red, bottom dark red
-  for (let i=0;i<N;i++) for (let j=0;j<6;j++){
-    const a = st[i].pts[j], b = st[i].pts[j+1], c = st[i+1].pts[j+1], d = st[i+1].pts[j];
-    face([a, b, c, d], segCol[j], [0, (a[1] + c[1])/2, 0.1]);
+  function disc(cx, cy, cz, r, col, axis){                       // octagon facing along y (axis = -1 or 1)
+    const pts = []; for (let k=0;k<8;k++){ const a = k/8*Math.PI*2; pts.push([cx + Math.cos(a)*r, cy, cz + Math.sin(a)*r]); }
+    face(pts, col, [cx, cy - axis, cz]);
   }
-  face(st[0].pts, 0, [0, 0, 0.1]);                               // transom
-  const FLOOR = 0.24;
-  for (let i=0;i<N;i++){                                         // gunwale cap, inner wall, cockpit floor, foredeck
-    const A = st[i], B = st[i+1], ia = A.w*0.84, ib = B.w*0.84;
+
+  // ---- hull: a smooth shaded deep V lofted through 24 stations ----
+  const NS = 24, Y0 = -1.38, Y1 = 1.5, sec = [];
+  for (let i=0;i<=NS;i++){
+    const t = i/NS, y = Y0 + (Y1 - Y0)*t;
+    const bow = Math.max(0, (t - 0.5)/0.5);
+    const w = 0.66*Math.pow(Math.max(0, 1 - Math.pow(bow, 1.7)), 0.62)*(0.9 + 0.1*Math.min(1, t*5));
+    const zd = 0.46 + 0.2*Math.pow(t, 2.2), keel = -0.26 + 0.33*Math.pow(t, 3.2), chineZ = 0.04 + 0.12*Math.pow(t, 2);
+    // gunwale, flared topside, chine, deadrise, keel (left half; mirrored below)
+    sec.push([[-w, y, zd], [-w*1.02, y, (zd + chineZ)/2 + 0.05], [-w*0.94, y, chineZ], [-w*0.5, y, (chineZ + keel)/2 - 0.02], [0, y, keel]]);
+  }
+  const full = sec.map(L => L.concat(L.slice(0, 4).reverse().map(p => [-p[0], p[1], p[2]])));   // 9 points per station
+  const NP = 9, nrm = full.map((L, i) => L.map((p, j) => {
+    const a = full[Math.max(0, i-1)][j], b = full[Math.min(NS, i+1)][j], c = L[Math.max(0, j-1)], d = L[Math.min(NP-1, j+1)];
+    let n = norm(cross(sub(b, a), sub(d, c)));
+    if (n[0]*p[0] + n[2]*(p[2] - 0.15) < 0) n = n.map(x => -x);
+    return n;
+  }));
+  const band = j => (j === 0 || j === 7) ? 0 : (j === 1 || j === 6) ? 1 : 11;   // white topsides, navy stripe, antifouling
+  for (let i=0;i<NS;i++) for (let j=0;j<NP-1;j++){
+    const a = full[i][j], b = full[i][j+1], c = full[i+1][j+1], d = full[i+1][j];
+    tri(a, b, c, nrm[i][j], nrm[i][j+1], nrm[i+1][j+1], band(j)); tri(a, c, d, nrm[i][j], nrm[i+1][j+1], nrm[i+1][j], band(j));
+  }
+  face(full[0], 0, [0, 0, 0.1]);                                 // transom
+  // ---- deck: rub rail, gunwale cap, cockpit walls and teak sole, foredeck ----
+  const SOLE = 0.22, COCKPIT_END = 0.45;
+  for (let i=0;i<NS;i++){
+    const A = sec[i][0], B = sec[i+1][0], ia = A[0]*0.86, ib = B[0]*0.86;
     for (const sg of [-1, 1]){
-      face([[sg*A.w, A.y, A.zd], [sg*ia, A.y, A.zd], [sg*ib, B.y, B.zd], [sg*B.w, B.y, B.zd]], 12, [0, (A.y+B.y)/2, -1]);
-      if (A.y < 0.55) face([[sg*ia, A.y, A.zd], [sg*ia, A.y, FLOOR], [sg*ib, B.y, FLOOR], [sg*ib, B.y, B.zd]], 0, [0, (A.y+B.y)/2, FLOOR + 0.1]);
+      face([[sg*-A[0], A[1], A[2]], [sg*-ia, A[1], A[2]], [sg*-ib, B[1], B[2]], [sg*-B[0], B[1], B[2]]], 0, [0, A[1], -1]);
+      rail([sg*-A[0]*1.01, A[1], A[2] - 0.03], [sg*-B[0]*1.01, B[1], B[2] - 0.03], 0.018, 5);
+      if (A[1] < COCKPIT_END) face([[sg*-ia, A[1], A[2]], [sg*-ia, A[1], SOLE], [sg*-ib, B[1], SOLE], [sg*-ib, B[1], B[2]]], 0, [0, A[1], SOLE + 0.2]);
     }
-    if (A.y < 0.55) face([[-ia, A.y, FLOOR], [ia, A.y, FLOOR], [ib, B.y, FLOOR], [-ib, B.y, FLOOR]], 2, [0, (A.y+B.y)/2, -1]);
-    else face([[-A.w*0.85, A.y, A.zd], [A.w*0.85, A.y, A.zd], [B.w*0.85, B.y, B.zd], [-B.w*0.85, B.y, B.zd]], 0, [0, (A.y+B.y)/2, -1]);
+    if (A[1] < COCKPIT_END) face([[ia, A[1], SOLE], [-ia, A[1], SOLE], [-ib, B[1], SOLE], [ib, B[1], SOLE]], 2, [0, A[1], -1]);
+    else face([[A[0]*0.86, A[1], A[2]], [-A[0]*0.86, A[1], A[2]], [-B[0]*0.86, B[1], B[2]], [B[0]*0.86, B[1], B[2]]], 0, [0, A[1], -1]);
   }
-  box(-0.27, 0.27, -0.02, 0.3, FLOOR, FLOOR + 0.4, 0, 12);       // console
-  face([[-0.29, 0.31, FLOOR + 0.4], [0.29, 0.31, FLOOR + 0.4], [0.25, 0.15, FLOOR + 0.66], [-0.25, 0.15, FLOOR + 0.66]], 6, [0, 0, 0]);   // windshield
-  box(-0.12, 0.12, 0.1, 0.2, FLOOR + 0.4, FLOOR + 0.43, 5);      // dashboard
-  box(-0.34, 0.34, -0.62, -0.34, FLOOR, FLOOR + 0.2, 3);         // bench
-  box(-0.34, 0.34, -0.66, -0.6, FLOOR + 0.2, FLOOR + 0.42, 3);   // backrest
-  box(-0.17, 0.17, -0.55, -0.32, FLOOR + 0.2, FLOOR + 0.56, 7);  // skipper: jacket
-  box(-0.09, 0.09, -0.48, -0.32, FLOOR + 0.56, FLOOR + 0.74, 8); // head
-  box(-0.11, 0.11, -0.5, -0.27, FLOOR + 0.74, FLOOR + 0.8, 9);   // cap
-  box(-0.21, -0.13, -0.32, -0.04, FLOOR + 0.42, FLOOR + 0.5, 7); // arms on the wheel
-  box(0.13, 0.21, -0.32, -0.04, FLOOR + 0.42, FLOOR + 0.5, 7);
-  for (const sx of [-0.32, 0.32]){                               // thruster pods with glowing rings
-    box(sx - 0.1, sx + 0.1, -1.46, -1.02, 0.02, 0.27, 4, 13);
-    box(sx - 0.115, sx + 0.115, -1.52, -1.45, 0.005, 0.285, 10);
-    box(sx - 0.04, sx + 0.04, -1.12, -0.98, 0.27, 0.36, 5);      // mount
+  const ce = sec.findIndex(L => L[0][1] >= COCKPIT_END), cw = sec[ce][0][0]*0.86, cz = sec[ce][0][2];
+  face([[cw, COCKPIT_END, SOLE], [-cw, COCKPIT_END, SOLE], [-cw, COCKPIT_END, cz], [cw, COCKPIT_END, cz]], 0, [0, -1, 0.3]);   // forward cockpit bulkhead
+  for (let k = -3; k <= 3; k++) box(k*0.13 - 0.006, k*0.13 + 0.006, -1.25, COCKPIT_END - 0.02, SOLE, SOLE + 0.004, 3);   // teak seams
+  // ---- bow rail on stanchions ----
+  const railPts = [];
+  for (let i = Math.floor(NS*0.55); i <= NS; i++){ const L = sec[i][0]; railPts.push([L[0]*0.8, L[1] - 0.04, L[2] + 0.16]); }
+  for (const sg of [-1, 1]){
+    for (let k=0;k<railPts.length-1;k++) rail([railPts[k][0]*sg, railPts[k][1], railPts[k][2]], [railPts[k+1][0]*sg, railPts[k+1][1], railPts[k+1][2]], 0.012, 10);
+    for (let k=0;k<railPts.length;k+=3) rail([railPts[k][0]*sg, railPts[k][1], railPts[k][2] - 0.16], [railPts[k][0]*sg, railPts[k][1], railPts[k][2]], 0.01, 10);
   }
+  // ---- console, windshield, wheel, throttle ----
+  box(-0.3, 0.3, 0.02, 0.36, SOLE, SOLE + 0.48, 0, 0);
+  box(-0.28, 0.28, 0.0, 0.03, SOLE + 0.06, SOLE + 0.44, 5);      // console face panel
+  face([[-0.32, 0.37, SOLE + 0.48], [0.32, 0.37, SOLE + 0.48], [0.27, 0.2, SOLE + 0.74], [-0.27, 0.2, SOLE + 0.74]], 6, [0, 0.0, 0.0]);
+  rail([-0.32, 0.37, SOLE + 0.48], [-0.27, 0.2, SOLE + 0.74], 0.012, 10); rail([0.32, 0.37, SOLE + 0.48], [0.27, 0.2, SOLE + 0.74], 0.012, 10);
+  rail([-0.27, 0.2, SOLE + 0.74], [0.27, 0.2, SOLE + 0.74], 0.012, 10);
+  for (let k=0;k<8;k++){ const a0 = k/8*Math.PI*2, a1 = (k+1)/8*Math.PI*2, r = 0.11, cz2 = SOLE + 0.47, cy = -0.02;
+    rail([Math.cos(a0)*r, cy - Math.sin(a0)*r*0.4, cz2 + Math.sin(a0)*r*0.9], [Math.cos(a1)*r, cy - Math.sin(a1)*r*0.4, cz2 + Math.sin(a1)*r*0.9], 0.014, 5); }
+  box(0.17, 0.21, -0.02, 0.06, SOLE + 0.44, SOLE + 0.56, 5);     // throttle lever
+  // ---- seating: helm seat, rear bench with cushions, cooler ----
+  box(-0.24, 0.24, -0.5, -0.24, SOLE, SOLE + 0.24, 0);
+  box(-0.23, 0.23, -0.49, -0.25, SOLE + 0.24, SOLE + 0.3, 9);
+  box(-0.23, 0.23, -0.52, -0.46, SOLE + 0.3, SOLE + 0.56, 9);
+  box(-0.5, 0.5, -1.22, -0.96, SOLE, SOLE + 0.22, 0);
+  box(-0.48, 0.48, -1.2, -0.98, SOLE + 0.22, SOLE + 0.28, 9);
+  box(-0.48, 0.48, -1.26, -1.2, SOLE + 0.22, SOLE + 0.46, 9);
+  box(0.24, 0.44, -0.78, -0.58, SOLE, SOLE + 0.2, 1, 0);
+  // ---- skipper ----
+  box(-0.07, -0.01, -0.36, -0.06, SOLE + 0.3, SOLE + 0.36, 1); box(0.01, 0.07, -0.36, -0.06, SOLE + 0.3, SOLE + 0.36, 1);   // legs
+  box(-0.15, 0.15, -0.44, -0.27, SOLE + 0.3, SOLE + 0.68, 7);    // jacket
+  box(-0.19, -0.13, -0.38, -0.06, SOLE + 0.52, SOLE + 0.6, 7); box(0.13, 0.19, -0.38, -0.06, SOLE + 0.52, SOLE + 0.6, 7);   // arms to the wheel
+  box(-0.08, 0.08, -0.43, -0.29, SOLE + 0.68, SOLE + 0.84, 8);   // head
+  box(-0.075, 0.075, -0.3, -0.28, SOLE + 0.75, SOLE + 0.78, 5);  // sunglasses
+  box(-0.1, 0.1, -0.45, -0.26, SOLE + 0.84, SOLE + 0.89, 1); box(-0.08, 0.08, -0.29, -0.2, SOLE + 0.84, SOLE + 0.86, 1);   // cap and peak
+  // ---- thruster pods on transom brackets: cowling, intake, fan, glowing ring ----
+  for (const sx of [-0.36, 0.36]){
+    box(sx - 0.05, sx + 0.05, -1.42, -1.3, 0.12, 0.34, 5);        // bracket
+    box(sx - 0.115, sx + 0.115, -1.62, -1.36, 0.0, 0.25, 4, 10);  // cowling
+    box(sx - 0.1, sx + 0.1, -1.38, -1.3, 0.02, 0.23, 5);          // intake
+    box(sx - 0.125, sx + 0.125, -1.68, -1.62, -0.01, 0.26, 12);   // ring
+    disc(sx, -1.685, 0.125, 0.09, 5, -1);                          // fan
+  }
+  // ---- navigation lights ----
+  const bowL = sec[NS - 3][0];
+  box(bowL[0]*0.9 - 0.03, bowL[0]*0.9 + 0.02, bowL[1] - 0.03, bowL[1] + 0.03, bowL[2], bowL[2] + 0.05, 13);
+  box(-bowL[0]*0.9 - 0.02, -bowL[0]*0.9 + 0.03, bowL[1] - 0.03, bowL[1] + 0.03, bowL[2], bowL[2] + 0.05, 14);
+  rail([0, -1.3, 0.46], [0, -1.3, 1.05], 0.014, 10); box(-0.03, 0.03, -1.33, -1.27, 1.05, 1.1, 15);   // stern light mast
+
   const data = new Float32Array(V), count = data.length/8, idx = new Uint16Array(count).map((_, i) => i);
   const vbo = gl.createBuffer(), ibo = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
@@ -1303,7 +1364,7 @@ function drawMeshes(shadowPass, camX, camY, halfX, halfY){
 function drawBoat(shadowPass, camX, camY, halfX, halfY){
   if (state === 'over' && boat.sink > 1.2) return;
   const o = MAX_INST - 1;
-  instData.set([boat.x, boat.y, 0.02*Math.sin(time*2.3) - (boat.sink || 0)*0.35, boat.th, 1.0, 1.0], o*6);
+  instData.set([boat.x, boat.y, boat.z + (boat.z > 0.01 ? 0 : 0.02*Math.sin(time*2.3)) - (boat.sink || 0)*0.35, boat.th, 1.0, 1.0], o*6);
   gl.bindBuffer(gl.ARRAY_BUFFER, instBuf); gl.bufferSubData(gl.ARRAY_BUFFER, o*24, instData, o*6, 6);
   gl.useProgram(meshProg);
   const u = meshProg.u;
@@ -1385,18 +1446,18 @@ function updateSparks(dt){
    Game state and physics
    ====================================================================== */
 const START_Y = 0;
-const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, hp:100, steer:0, throttle:0, flash:0, roll:0, pitch:0, boost:1, boosting:false, sink:0 };
+const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, hp:100, steer:0, throttle:0, flash:0, roll:0, pitch:0, boost:1, boosting:false, sink:0, z:0, vz:0, strafe:0, jumpT:0, splash:0, splashSim:0 };
 let state = 'ready';                 // ready | run | over
 let time = 0, score = { gates:0, dist:0 };
 let best = 0;
 try { best = +localStorage.getItem('riverrun.best') || 0; } catch(e) {}
-const input = { up:false, down:false, left:false, right:false, boost:false };
+const input = { up:false, down:false, left:false, right:false, boost:false, strafeL:false, strafeR:false };
 const cam = { x:0, y:0, half:14, shake:0 };
 const particles = [];
 
 function resetGame(){
   boat.x = spawn.x; boat.y = spawn.y; boat.th = spawn.th; boat.vx = 0; boat.vy = 0; boat.w = 0;
-  boat.hp = 100; boat.steer = 0; boat.throttle = 0; boat.flash = 0; boat.roll = 0; boat.pitch = 0; boat.boost = 1; boat.sink = 0;
+  boat.hp = 100; boat.steer = 0; boat.throttle = 0; boat.flash = 0; boat.roll = 0; boat.pitch = 0; boat.boost = 1; boat.sink = 0; boat.z = 0; boat.vz = 0; boat.strafe = 0; boat.jumpT = 0; boat.splash = 0;
   score = { gates:0, dist:0, top:0 }; nextGate = 0; lap = 0;
   spawnFloaters();
   particles.length = 0; sparks.length = 0;
@@ -1463,14 +1524,21 @@ function stepBoat(dt, controlled){
   const vf = rvx*fx + rvy*fy, vl = rvx*nx + rvy*ny;
   const thr = controlled ? b.throttle : 0;
   const thrust = thr > 0 ? thr*THRUST*(b.boosting ? BOOST : 1) : thr*THRUST_REV;
-  const Ff = thrust - (0.35 + 0.08*Math.abs(vf))*vf;           // long axis: slippery
-  const grip = b.boosting ? 2.6 : 4.6;                         // boosting loosens the keel: the stern slides out
-  const Fl = -(grip + 0.8*Math.abs(vl))*vl;
+  const air = b.z > 0.001 || b.vz > 0;
+  const wet = air ? 0.08 : 1;                                  // airborne: almost no water drag or grip
+  const Ff = (air ? 0 : thrust) - (0.35 + 0.08*Math.abs(vf))*vf*wet;   // long axis: slippery
+  const strafe = controlled && !air ? b.strafe : 0;            // pods turned sideways slide the boat
+  const grip = (b.boosting ? 2.6 : 4.6)*(Math.abs(strafe) > 0.1 ? 0.3 : 1);   // boosting or strafing loosens the keel
+  const Fl = 7.5*strafe - (grip + 0.8*Math.abs(vl))*vl*wet;
   b.vx += (Ff*fx + Fl*nx)*dt; b.vy += (Ff*fy + Fl*ny)*dt;
+  if (air){
+    b.z += b.vz*dt; b.vz -= 17*dt;
+    if (b.z <= 0){ b.z = 0; if (b.vz < -1) b.splash = Math.min(1.5, -b.vz/6); b.vz = 0; }
+  }
   const rudder = Math.min(1, (Math.abs(vf) + Math.abs(thrust)*0.6)/4);
   const dir = vf < -0.4 ? -1 : 1;
   // jets give steering even when slow; at speed the rudder takes over and yaw is capped so turns stay controllable
-  const torque = (controlled ? b.steer : 0) * 7.5 * (0.45 + 0.55*rudder) * dir * (1 - 0.25*Math.min(1, Math.abs(vf)/10)) - 3.1*b.w - 0.3*vl*(vf >= 0 ? 1 : -1);
+  const torque = (controlled ? b.steer : 0) * (air ? 0.3 : 1) * (7.5 * (0.45 + 0.55*rudder) * dir + (Math.abs(b.throttle) < 0.2 ? 3.2 : 0)) * (1 - 0.25*Math.min(1, Math.abs(vf)/10)) - 3.1*b.w - 0.3*vl*(vf >= 0 ? 1 : -1);
   b.w += torque*dt;
   b.x += b.vx*dt; b.y += b.vy*dt; b.th += b.w*dt;
 
@@ -1536,6 +1604,27 @@ function updateFloaters(dt){
     const rel = (b.vx - a.vx)*nx + (b.vy - a.vy)*ny;
     if (rel < 0){ const j = -0.8*rel; a.vx -= nx*j; a.vy -= ny*j; b.vx += nx*j; b.vy += ny*j; }
   }
+}
+
+// Where each stern pod points its jet and how hard. Both pods sit on the transom;
+// nothing fires from the bow. dir is the jet's frame angle (exhaust along (sin dir, -cos dir)).
+function thrusterState(side){
+  const fx = -Math.sin(boat.th), fy = Math.cos(boat.th), rx = Math.cos(boat.th), ry = Math.sin(boat.th);
+  const t = { x: boat.x + rx*side*0.36 - fx*1.69, y: boat.y + ry*side*0.36 - fy*1.69, dir: boat.th, open: 0, down: boat.jumpT > 0 ? boat.jumpT/0.35 : 0 };
+  if (t.down > 0 || (state !== 'run' && state !== 'ready')) return t;
+  const thr = boat.throttle, bucket = boat.th + Math.PI - side*0.7;   // reverse bucket: jet deflected forward and outward
+  if (Math.abs(boat.strafe) > 0.1){ t.dir = boat.th - boat.strafe*Math.PI/2; t.open = Math.abs(boat.strafe)*0.7; }
+  else if (Math.abs(thr) < 0.15 && Math.abs(boat.steer) > 0.2){                  // spin in place: one pushes, one reverses
+    const pushes = Math.sign(boat.steer) === side;
+    t.dir = pushes ? boat.th : bucket; t.open = Math.abs(boat.steer)*(pushes ? 0.6 : 0.45);
+  } else if (thr < -0.05){ t.dir = bucket; t.open = -thr*0.7; }
+  else { t.dir = boat.th - boat.steer*0.3; t.open = Math.max(0, thr)*(boat.boosting ? 1.25 : 0.85) + (state === 'run' ? 0.12 : 0.06); }
+  return t;
+}
+function jump(){                                              // pods fire straight down: the boat leaves the water
+  if (state !== 'run' || boat.z > 0.01 || boat.boost < 0.3) return;
+  boat.vz = 6.5; boat.z = 0.001; boat.boost -= 0.3; boat.jumpT = 0.35;
+  for (let i=0;i<18;i++){ const a = Math.random()*Math.PI*2; spawnFoam(boat.x + Math.cos(a)*0.9, boat.y + Math.sin(a)*1.3, Math.cos(a)*3, Math.sin(a)*3, 1.0, 0.5, 0.85); }
 }
 
 function wreck(){
@@ -1606,7 +1695,8 @@ const RIPPLES = true;                 // still water: the wave simulation is off
 function gatherSources(rs){
   const src = [];
   const b = boat, fx = -Math.sin(b.th), fy = Math.cos(b.th), nx = Math.cos(b.th), ny = Math.sin(b.th);
-  const k = Math.min(1.3, rs/7);
+  const k = Math.min(1.3, rs/7)*(boat.z < 0.05 ? 1 : 0);
+  if (boat.splashSim > 0){ src.push([b.x, b.y, 1.3, 0.12*boat.splashSim]); boat.splashSim = 0; }
   src.push([b.x + fx*1.15, b.y + fy*1.15, 0.42, 0.014*k]);                 // bow pushes water up
   src.push([b.x + fx*0.2 + nx*0.5, b.y + fy*0.2 + ny*0.5, 0.35, -0.006*k]); // low pressure along the flanks
   src.push([b.x + fx*0.2 - nx*0.5, b.y + fy*0.2 - ny*0.5, 0.35, -0.006*k]);
@@ -1657,6 +1747,8 @@ function update(dt){
   boat.boosting = input.boost && boat.boost > 0.02 && boat.throttle > 0.3 && state === 'run';
   boat.boost = Math.min(1, Math.max(0, boat.boost + (boat.boosting ? -0.32 : 0.14)*dt));
   if (state === 'over') boat.sink += dt;
+  boat.strafe += (((input.strafeR ? 1 : 0) - (input.strafeL ? 1 : 0)) - boat.strafe)*Math.min(1, dt*8);
+  boat.jumpT = Math.max(0, boat.jumpT - dt);
   boat.flash = Math.max(0, boat.flash - dt*2.5);
   near = obstaclesNear(boat.x, boat.y, 28);
 
@@ -1675,28 +1767,33 @@ function update(dt){
   const fx = -Math.sin(boat.th), fy = Math.cos(boat.th), nx = Math.cos(boat.th), ny = Math.sin(boat.th);
   const vfwd = rvx*fx + rvy*fy;                                // the hull banks into turns and lifts its bow with speed
   boat.roll  += (-boat.steer*Math.min(1, Math.abs(vfwd)/6)*0.14 - boat.w*0.02 - boat.roll)*Math.min(1, dt*4);
-  boat.pitch += (0.05*Math.min(1, Math.max(0, vfwd)/8) + 0.035*Math.max(0, boat.throttle) + (boat.boosting ? 0.03 : 0) - boat.pitch)*Math.min(1, dt*3);
+  boat.pitch += (0.05*Math.min(1, Math.max(0, vfwd)/8) + 0.035*Math.max(0, boat.throttle) + (boat.boosting ? 0.03 : 0) + boat.vz*0.025 - boat.pitch)*Math.min(1, dt*3);
   const rate = (rs*5 + Math.abs(boat.throttle)*14) * dt;
   let nspawn = Math.floor(rate + Math.random());
-  while (nspawn-- > 0 && state !== 'over'){
+  while (nspawn-- > 0 && state !== 'over' && boat.z < 0.05){
     const jit = (Math.random()-0.5)*0.5;
     spawnFoam(boat.x - fx*1.5 + nx*jit, boat.y - fy*1.5 + ny*jit, u[0] - fx*0.8 + nx*jit*2, u[1] - fy*0.8 + ny*jit*2, 2.0+Math.random()*1.6, 0.30+Math.random()*0.25, 0.55);
   }
-  if (rs > 2.5 && Math.random() < dt*rs*3){
+  if (rs > 2.5 && boat.z < 0.05 && Math.random() < dt*rs*3){
     const side = Math.random() < 0.5 ? -1 : 1;
     spawnFoam(boat.x + fx*0.9 + nx*0.55*side, boat.y + fy*0.9 + ny*0.55*side, u[0] + nx*side*1.1, u[1] + ny*side*1.1, 1.1+Math.random()*0.7, 0.22+Math.random()*0.15, 0.7);
   }
   updateParticles(dt);
   updateFloaters(dt);
   if (state !== 'over'){                                      // glow_particle sparks from the jets
-    const open = Math.abs(boat.throttle);
-    let ns = Math.floor(open*60*dt + Math.random());
-    while (ns-- > 0 && sparks.length < 160){
-      const side = Math.random() < 0.5 ? -0.32 : 0.32, rev = boat.throttle < 0, ay = rev ? 1.0 : -1.4, dirSign = rev ? 1 : -1;
-      const px = boat.x + nx*side + fx*ay, py = boat.y + ny*side + fy*ay;
-      const sp = 3 + Math.random()*4;
-      sparks.push({ x: px, y: py, vx: fx*sp*dirSign + (Math.random() - 0.5)*1.2 + boat.vx*0.5, vy: fy*sp*dirSign + (Math.random() - 0.5)*1.2 + boat.vy*0.5, life: 0.25 + Math.random()*0.3, max: 0.55 });
+    for (const side of [-1, 1]){
+      const t = thrusterState(side), open = t.down > 0 ? 1.5 : t.open, ex = Math.sin(t.dir), ey = -Math.cos(t.dir);
+      let ns = Math.floor(open*30*dt + Math.random());
+      while (ns-- > 0 && sparks.length < 200){
+        const sp = 3 + Math.random()*4, spread = t.down > 0 ? 3 : 1.2;
+        sparks.push({ x: t.x, y: t.y, vx: (t.down > 0 ? 0 : ex*sp) + (Math.random() - 0.5)*spread + boat.vx*0.5,
+                      vy: (t.down > 0 ? 0 : ey*sp) + (Math.random() - 0.5)*spread + boat.vy*0.5, life: 0.25 + Math.random()*0.3, max: 0.55 });
+      }
     }
+  }
+  if (boat.splash > 0){                                       // landing after a jump
+    for (let i=0;i<26*boat.splash;i++){ const a = Math.random()*Math.PI*2, r = 0.6 + Math.random()*0.8; spawnFoam(boat.x + Math.cos(a)*r, boat.y + Math.sin(a)*r*1.4, Math.cos(a)*4*boat.splash, Math.sin(a)*4*boat.splash, 1.4, 0.55, 0.9); }
+    cam.shake = Math.max(cam.shake, 0.35*boat.splash); boat.splashSim = boat.splash; boat.splash = 0;
   }
 
   // simulation
@@ -1799,19 +1896,20 @@ function drawScene(){
   const ng = gates[nextGate];
   if (ng && state !== 'over') pushQuad(ng.x, ng.y, ng.gap, 0.3, Math.atan2(ng.rad[1], ng.rad[0]), 12, 0, 0, 0, 0, 0);
   if (state !== 'over'){
-    const rev = boat.throttle < -0.05;
-    const open = rev ? Math.min(1, -boat.throttle*0.7) : Math.max(0, boat.throttle)*(boat.boosting ? 1.25 : 0.85) + (state === 'run' ? 0.12 : 0.06);
-    const dirTh = boat.th + (rev ? Math.PI : 0) - boat.steer*0.3;
-    const ax = -Math.sin(dirTh), ay = Math.cos(dirTh);
-    const fx = -Math.sin(boat.th), fy = Math.cos(boat.th), rx = Math.cos(boat.th), ry = Math.sin(boat.th);
-    const L = 0.5 + 3.4*open, night = 0.25 + 0.75*(1 - SKY.day);
-    for (const side of [-0.32, 0.32]){
-      const along = rev ? 1.0 : -1.38;
-      const nx = boat.x + rx*side + fx*along, ny = boat.y + ry*side + fy*along;
-      pushQuad(nx - ax*L*0.45, ny - ay*L*0.45, 1.2 + L*0.35, 1.2 + L*0.55, dirTh, 11, 0, 1.2 + L*0.35, 1.2 + L*0.55, night, open);
-      pushQuad(nx - ax*L*0.5, ny - ay*L*0.5, 0.2, L*0.5, dirTh, 7, side, L, open, 0, 0);
-      pushQuad(nx - ax*0.5, ny - ay*0.5, 0.3, 0.5, dirTh, 8, side, 1, open, 0, 0);
-      pushQuad(nx, ny, 0.2, 0.2, dirTh, 9, side, open, 0, 0, 0);
+    const night = 0.25 + 0.75*(1 - SKY.day);
+    for (const side of [-1, 1]){
+      const t = thrusterState(side);
+      if (t.down > 0){                                         // jump: jets straight down, a flash on the water
+        pushQuad(t.x, t.y, 1.8, 1.8, 0, 11, 0, 1.8, 1.8, 1.0, 1.0);
+        pushQuad(t.x, t.y, 0.35, 0.35, 0, 9, 0, 1.0 + t.down, 0, 0, 0);
+        continue;
+      }
+      if (t.open <= 0.01) continue;
+      const L = 0.5 + 3.4*t.open, ax = -Math.sin(t.dir), ay = Math.cos(t.dir);
+      pushQuad(t.x - ax*L*0.45, t.y - ay*L*0.45, 1.2 + L*0.35, 1.2 + L*0.55, t.dir, 11, 0, 1.2 + L*0.35, 1.2 + L*0.55, night, t.open);
+      pushQuad(t.x - ax*L*0.5, t.y - ay*L*0.5, 0.2, L*0.5, t.dir, 7, side, L, t.open, 0, 0);
+      pushQuad(t.x - ax*0.5, t.y - ay*0.5, 0.3, 0.5, t.dir, 8, side, 1, t.open, 0, 0);
+      pushQuad(t.x, t.y, 0.2, 0.2, t.dir, 9, side, t.open, 0, 0, 0);
     }
   }
   for (const k of sparks) pushQuad(k.x, k.y, 0.08, 0.08, 0, 10, 0, k.life/k.max, 0, 0, 0);
@@ -1882,9 +1980,10 @@ function toast(msg, bad){
 }
 
 /* ---------- input ---------- */
-const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right', ShiftLeft:'boost', ShiftRight:'boost' };
+const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right', ShiftLeft:'boost', ShiftRight:'boost', KeyQ:'strafeL', KeyE:'strafeR' };
 addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT'){ if (e.code === 'Enter') submitScore(); return; }   // typing a name
+  if (e.code === 'Space'){ e.preventDefault(); if (state === 'ready') startGame(); jump(); return; }
   const k = keymap[e.code];
   if (k){ input[k] = true; e.preventDefault(); if (state === 'ready' && k !== 'boost') startGame(); }
   else if (e.code === 'KeyT'){ toonWater = !toonWater; toast(toonWater ? 'Toon water' : 'Standard water'); try { localStorage.setItem('riverrun.water', toonWater ? 'toon' : 'standard'); } catch(err) {} }
