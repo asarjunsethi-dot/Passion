@@ -614,10 +614,21 @@ void main(){
     float cb = textureLod(uCaus, p*0.045 - vec2(uTime*0.009, -uTime*0.011) + 0.37, 3.5).r;
     float glow = ca*cb;                                              // soft patches of light on the sand
     vec3 bed = toLinear(mix(vec3(0.78, 0.74, 0.56), vec3(0.88, 0.84, 0.66), vnoise(p*0.22)))*(0.9 + 0.9*glow*sh);   // clean pale sand, soft light patches
+    // caustic lines on the bottom (the Godot shader's two layer caustics), brightest in the shallows
+    float c1 = texture(uCaus, p*0.16 + vec2(uTime*0.02, uTime*0.013)).r;
+    vec3 caus = pow(sampleCaustics(p*0.34 + c1*0.05 - vec2(uTime*0.016, -uTime*0.01))*CAUSTICS_STRENGTH, vec3(2.0));
+    float causW = pow(sh, 2.2);                                   // gone by about 4 m deep
+    bed += caus*0.3*causW;
     color = mix(color, bed*vec3(0.62, 0.95, 0.92), pow(sh, 2.2)*0.6);
+    color += caus*0.04*causW;
     float lap = 0.18 + 0.12*sin(uTime*0.9 + fbm(p*0.15)*6.0);
     float shape = texture(uFoam, p*0.35 + vec2(uTime*0.02, 0.0)).r;
     float foam = (1.0 - smoothstep(lap*0.5, lap, D))*smoothstep(0.25, 0.6, shape + 0.35);
+    // ripples rolling in toward the beach and foaming as they reach it
+    float rip = 0.5 + 0.5*sin(D*9.0 - uTime*2.2 + fbm(p*0.2)*4.0);
+    float shape2 = texture(uFoam, p*0.5 + vec2(0.0, uTime*0.03)).r;
+    float ripFoam = smoothstep(0.72, 0.95, rip)*(1.0 - smoothstep(0.0, 1.5, D))*smoothstep(0.45, 0.8, shape2 + 0.1);
+    foam = max(foam, ripFoam*0.75);
     color = mix(color, vec3(0.92), foam*0.85);
     vec3 lit = uToon > 0.5
       ? color*(uAmbient + stepped(max(uLightDir.z, 0.0), DIFFUSE_STEPS, DIFFUSE_SMOOTHNESS)*uLightCol*1.1)
