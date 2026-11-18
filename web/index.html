@@ -13,7 +13,12 @@
   html,body{margin:0;height:100%;background:#0a2a33;overflow:hidden;color:var(--ink);
     font:15px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-user-select:none;user-select:none}
   canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
-  #hud{position:fixed;left:16px;top:16px;display:flex;gap:10px;flex-wrap:wrap;pointer-events:none;max-width:calc(100vw - 32px)}
+  #hud{pointer-events:none}
+  #speedo{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);text-align:center;font-weight:600;font-size:15px;letter-spacing:.04em;
+    font-variant-numeric:tabular-nums;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.45)}
+  #speedo .bar{width:90px;height:3px;margin:6px auto 0;border-radius:2px;background:rgba(255,255,255,.25)}
+  #speedo .bar i{background:#fff}
+  #clockbox{position:fixed;right:16px;top:14px;font-size:13px;color:#fff;opacity:.75;text-shadow:0 1px 6px rgba(0,0,0,.45);font-variant-numeric:tabular-nums}
   .chip{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:8px 12px;backdrop-filter:blur(6px);min-width:84px}
   .chip .k{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
   .chip .v{display:block;font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
@@ -45,7 +50,9 @@
   #arrow{position:fixed;left:0;top:0;width:36px;height:36px;display:none;color:var(--accent);font-size:30px;line-height:36px;text-align:center;
     text-shadow:0 2px 8px rgba(0,0,0,.6);pointer-events:none;transform-origin:18px 18px}
   .credit{font-size:12px;opacity:.7}
-  #keyhelp{position:fixed;left:16px;bottom:14px;font-size:12px;color:var(--ink2);background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:6px 10px;pointer-events:none}
+  #keyhelp{position:fixed;left:16px;bottom:16px;font-size:12px;color:#fff;opacity:.7;text-shadow:0 1px 6px rgba(0,0,0,.5);pointer-events:none;transition:opacity 1.2s}
+  #keyhelp.fade{opacity:0}
+  .card{background:rgba(8,32,40,.45)!important;border-color:rgba(255,255,255,.15)!important}
   @media (pointer:coarse){#keyhelp{display:none}}
   .hide{display:none!important}
   #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
@@ -59,23 +66,20 @@
 <canvas id="c"></canvas>
 
 <div id="hud">
-  <div class="chip"><span class="k">Distance</span><span class="v" id="dist">0 m</span></div>
-  <div class="chip"><span class="k">Top speed</span><span class="v" id="gates">0</span></div>
-  <div class="chip"><span class="k">Speed</span><span class="v" id="spd">0 km/h</span></div>
-  <div class="chip"><span class="k">Boost</span><div class="bar" style="display:none"><i id="hp"></i></div><div class="bar"><i id="boostbar" style="background:#5fd4ff"></i></div></div>
-  <div class="chip"><span class="k">Time</span><span class="v" id="clock">06:00</span></div>
+  <div id="speedo"><span id="spd">0 km/h</span><div class="bar"><i id="boostbar"></i></div></div>
+  <div id="clockbox"><span id="clock">06:00</span></div>
+  <span id="dist" hidden></span><span id="gates" hidden></span><i id="hp" hidden></i>
 </div>
 <div id="arrow">&#10148;</div>
-<div id="keyhelp">W/S thrust &nbsp; A/D steer &nbsp; Q/E strafe &nbsp; Shift boost &nbsp; Space jump</div>
+<div id="keyhelp">W/S thrust &nbsp; A/D steer &nbsp; Q/E strafe &nbsp; Shift boost &nbsp; Space jump &nbsp; H help</div>
 <div id="toast"></div>
 
 <div id="start" class="panel">
   <div class="card">
     <h1>River Run</h1>
-    <p>An open lake to roam. Circle the island, drift with boost, ram the floating buoys around. A full day passes every ten minutes.</p>
-    <div class="keys"><b>W</b><b>A</b><b>S</b><b>D</b></div>
-    <p>W throttle, S reverse thrust, A and D steer (spin in place when slow), Q and E strafe, Shift boost, Space jump, R back to the start. T switches the water style.</p>
-    <button class="go" id="go">Loading the forest...</button>
+    <p>Sail the open lake. Drift, jump, and knock the beach balls around.</p>
+    
+    <button class="go" id="go">Press W to sail</button>
   </div>
 </div>
 
@@ -1363,7 +1367,59 @@ function drawMeshes(shadowPass, camX, camY, halfX, halfY){
   gl.bindVertexArray(null);
   drawBoat(shadowPass, camX, camY, halfX, halfY);
 }
+let ballMesh = null;
+function buildBall(){                                         // six colored panels with white caps
+  const PAL = [[236,58,48],[250,208,40],[38,108,228],[246,246,240],[56,186,88],[250,138,38]];
+  const V = [], LAT = 10, LON = 18;
+  const cellUv = i => [((i % 4) + 0.5)/4, (Math.floor(i/4) + 0.5)/4];
+  const P = (i, j) => { const a = -Math.PI/2 + Math.PI*i/LAT, b = Math.PI*2*j/LON; return [Math.cos(a)*Math.cos(b), Math.cos(a)*Math.sin(b), Math.sin(a)]; };
+  for (let i=0;i<LAT;i++) for (let j=0;j<LON;j++){
+    const col = (i < 1 || i >= LAT - 1) ? 3 : Math.floor(j/3) % 6, [u, v] = cellUv(col);
+    for (const [a, b] of [[i, j], [i+1, j], [i+1, j+1], [i, j], [i+1, j+1], [i, j+1]]){ const p = P(a, b); V.push(p[0], p[1], p[2], p[0], p[1], p[2], u, v); }
+  }
+  const data = new Float32Array(V), count = data.length/8, idx = new Uint16Array(count).map((_, i) => i);
+  const vbo = gl.createBuffer(), ibo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const loc = n => gl.getAttribLocation(meshProg, n);
+  gl.enableVertexAttribArray(loc('aPos')); gl.vertexAttribPointer(loc('aPos'), 3, gl.FLOAT, false, 32, 0);
+  gl.enableVertexAttribArray(loc('aNrm')); gl.vertexAttribPointer(loc('aNrm'), 3, gl.FLOAT, false, 32, 12);
+  gl.enableVertexAttribArray(loc('aUv'));  gl.vertexAttribPointer(loc('aUv'), 2, gl.FLOAT, false, 32, 24);
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.enableVertexAttribArray(loc('iA')); gl.vertexAttribDivisor(loc('iA'), 1);
+  gl.enableVertexAttribArray(loc('iB')); gl.vertexAttribDivisor(loc('iB'), 1);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  const px = new Uint8Array(64).fill(255); PAL.forEach((c, i) => px.set([c[0], c[1], c[2], 255], i*4));
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 4, 4, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  ballMesh = { vao, count, tex, iA: loc('iA'), iB: loc('iB') };
+}
+function drawBalls(shadowPass, camX, camY, halfX, halfY){
+  if (!floaters.length) return;
+  if (!ballMesh) buildBall();
+  gl.useProgram(meshProg);
+  const u = meshProg.u, o = MAX_INST - 2, gy = halfY/COS_T, m = shadowPass ? 20 : 3;
+  gl.uniform2f(u.uCam, camX, camY); gl.uniform2f(u.uHalf, halfX, halfY);
+  gl.uniform1f(u.uTime, time); gl.uniform1f(u.uShadow, shadowPass ? 1 : 0); gl.uniform1f(u.uShadowStrength, SKY.shadow);
+  gl.uniform1f(u.uProp, 0); setLight(u); bindSkyTextures(u, 1);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, ballMesh.tex); gl.uniform1i(u.uTex, 0);
+  gl.bindVertexArray(ballMesh.vao); gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.vertexAttribPointer(ballMesh.iA, 4, gl.FLOAT, false, 24, o*24);
+  gl.vertexAttribPointer(ballMesh.iB, 2, gl.FLOAT, false, 24, o*24 + 16);
+  for (const f of floaters){
+    if (Math.abs(f.x - camX) > halfX + m || f.y < camY - gy - m || f.y > camY + gy + m) continue;
+    instData.set([f.x, f.y, f.r*0.42 + 0.03*Math.sin(time*2 + f.seed*10), f.spin, f.r, 1.0], o*6);
+    gl.bufferSubData(gl.ARRAY_BUFFER, o*24, instData, o*6, 6);
+    gl.uniform2f(u.uRP, f.ry, f.rx);
+    gl.drawElementsInstanced(gl.TRIANGLES, ballMesh.count, gl.UNSIGNED_SHORT, 0, 1);
+  }
+  gl.bindVertexArray(null);
+}
 function drawBoat(shadowPass, camX, camY, halfX, halfY){
+  drawBalls(shadowPass, camX, camY, halfX, halfY);
   if (state === 'over' && boat.sink > 1.2) return;
   const o = MAX_INST - 1;
   instData.set([boat.x, boat.y, boat.z + (boat.z > 0.01 ? 0 : 0.02*Math.sin(time*2.3)) - (boat.sink || 0)*0.35, boat.th, 1.0, 1.0], o*6);
@@ -1487,8 +1543,10 @@ function resetGame(){
   document.getElementById('start').classList.remove('hide');
   updateHud(true);
 }
+let helpTimer = 0;
 function startGame(){
   if (state !== 'ready' || !natureReady) return;
+  clearTimeout(helpTimer); el('keyhelp').classList.remove('fade'); helpTimer = setTimeout(() => el('keyhelp').classList.add('fade'), 8000);
   const u = baseFlow(boat.x, boat.y); boat.vx = u[0]; boat.vy = u[1];
   state = 'run';
   document.getElementById('start').classList.add('hide');
@@ -1587,20 +1645,22 @@ const floaters = [];
 function spawnFloaters(){
   const R = rng(SEED ^ 0xbeef);
   floaters.length = 0;
-  for (let t = 0; t < 400 && floaters.length < 30; t++){
+  for (let t = 0; t < 600 && floaters.length < 40; t++){
     const th = R()*Math.PI*2, ri = islandR(th), ro = outerR(th), r = ri + 6 + R()*(ro - ri - 12);
     const x = Math.cos(th)*r, y = Math.sin(th)*r;
     if (bankDist(x, y) < 4 || Math.hypot(x - spawn.x, y - spawn.y) < 10) continue;
     if (floaters.some(f => Math.hypot(f.x - x, f.y - y) < 3)) continue;
-    floaters.push({ x, y, vx: 0, vy: 0, r: 0.45, col: Math.floor(R()*3), seed: R() });
+    floaters.push({ x, y, vx: 0, vy: 0, r: 0.42, seed: R(), spin: R()*Math.PI*2, rx: R()*6, ry: R()*6 });
   }
 }
 function updateFloaters(dt){
   const c = Math.cos(boat.th), s = Math.sin(boat.th);
   for (const f of floaters){
-    const u = baseFlow(f.x, f.y), k = Math.min(1, dt*0.9);
-    f.vx += (u[0] - f.vx)*k; f.vy += (u[1] - f.vy)*k;           // water drag pulls toward the current
+    const u = baseFlow(f.x, f.y), k = Math.min(1, dt*0.9), wa = time*0.013 + 1.3;
+    const wx = u[0] + Math.cos(wa)*0.3, wy = u[1] + Math.sin(wa)*0.3;   // current plus a light breeze
+    f.vx += (wx - f.vx)*k; f.vy += (wy - f.vy)*k;
     f.x += f.vx*dt; f.y += f.vy*dt;
+    f.rx += f.vy*dt/f.r; f.ry -= f.vx*dt/f.r;                   // roll as they move
     const d = bankDist(f.x, f.y) - f.r;
     if (d < 0){ const n = bankNormal(f.x, f.y), vn = f.vx*n[0] + f.vy*n[1]; f.x -= n[0]*d; f.y -= n[1]*d; if (vn < 0){ f.vx -= 1.6*vn*n[0]; f.vy -= 1.6*vn*n[1]; } }
     for (const [lx, ly] of hullPts){                              // the hull shoves buoys (buoy mass 0.15, boat 1)
@@ -1611,8 +1671,8 @@ function updateFloaters(dt){
       f.x += nx*pen; f.y += ny*pen;
       const rel = (f.vx - boat.vx)*nx + (f.vy - boat.vy)*ny;
       if (rel < 0){
-        const j = -1.6*rel/(1/0.15 + 1);
-        f.vx += nx*j/0.15; f.vy += ny*j/0.15; boat.vx -= nx*j; boat.vy -= ny*j;
+        const j = -1.7*rel/(1/0.08 + 1);                         // a beach ball weighs almost nothing
+        f.vx += nx*j/0.08; f.vy += ny*j/0.08; boat.vx -= nx*j; boat.vy -= ny*j;
         if (-rel > 2) for (let i=0;i<5;i++) spawnFoam(f.x, f.y, nx*2 + (Math.random()-0.5)*2, ny*2 + (Math.random()-0.5)*2, 0.9, 0.35, 0.7);
       }
     }
@@ -1911,7 +1971,6 @@ function drawScene(){
     const id = o.gate === nextGate ? o.buoy : (o.gate < nextGate ? 2 : 3);
     pushSprite(o.x, o.y, 0.75, 0, 3, (o.x*0.37 + o.y*0.11) % 1, id, 0, 0, 0);
   }
-  for (const f of floaters){ pushSprite(f.x + 0.12, f.y - 0.16, 0.8, 0, 0, 0, 0.5, 0, 0, 0.3); pushSprite(f.x, f.y, 0.75, 0, 3, f.seed, f.col, 0, 0, 0); }
   const normalCount = sprCount;
 
   // glow pass content: next gate marker, jet light on the water, beams, flares, balls, sparks
@@ -1984,7 +2043,7 @@ function updateHud(force){
   setText('gates', Math.round((score.top || 0)*3.6) + ' km/h');
   setText('spd', Math.round(Math.hypot(boat.vx, boat.vy)*3.6) + ' km/h');
   const hrs = (6 + skyClock/CYCLE*24) % 24;
-  setText('clock', String(Math.floor(hrs)).padStart(2, '0') + ':' + String(Math.floor((hrs % 1)*60)).padStart(2, '0') + (SKY.sun[2] >= 0 ? ' \u2600' : ' \u263E'));
+  setText('clock', String(Math.floor(hrs)).padStart(2, '0') + ':' + String(Math.floor((hrs % 1)*60)).padStart(2, '0') + (SKY.sun[2] >= 0 ? '  \u2600' : '  \u263E'));
   el('boostbar').style.width = Math.round(boat.boost*100) + '%';
   const hp = Math.round(boat.hp);
   if (force || hudCache.hp !== hp){
@@ -2002,6 +2061,7 @@ function toast(msg, bad){
 const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right', ShiftLeft:'boost', ShiftRight:'boost', KeyQ:'strafeL', KeyE:'strafeR' };
 addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT'){ if (e.code === 'Enter') submitScore(); return; }   // typing a name
+  if (e.code === 'KeyH'){ el('keyhelp').classList.toggle('fade'); return; }
   if (e.code === 'Space'){ e.preventDefault(); if (state === 'ready') startGame(); jump(); return; }
   const k = keymap[e.code];
   if (k){ input[k] = true; e.preventDefault(); if (state === 'ready' && k !== 'boost') startGame(); }
@@ -2041,7 +2101,7 @@ function frame(now){
 resetGame();
 // The KayKit pack is no longer used (no trees, bushes, grass tufts or rocks): the map is open water, beaches and BinbunGrass.
 natureReady = true;
-el('go').textContent = 'Press any movement key to launch';
+el('go').textContent = 'Press W to sail';
 requestAnimationFrame(frame);
 
 // Handle for automated checks.
