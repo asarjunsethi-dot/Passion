@@ -1107,7 +1107,7 @@ let toonWater = false;
 try { toonWater = new URLSearchParams(location.search).get('water') === 'toon' || localStorage.getItem('riverrun.water') === 'toon'; } catch(e) {}
 
 // sprite batch
-const MAX_SPRITES = 1200, FLOATS = 12;
+const MAX_SPRITES = 2600, FLOATS = 12;
 const sprData = new Float32Array(MAX_SPRITES*6*FLOATS);
 let sprCount = 0;
 const sprVao = gl.createVertexArray(), sprBuf = gl.createBuffer();
@@ -1298,8 +1298,10 @@ function buildBoat(){
     box(sx - 0.05, sx + 0.05, -1.42, -1.3, 0.12, 0.34, 5);        // bracket
     box(sx - 0.115, sx + 0.115, -1.62, -1.36, 0.0, 0.25, 4, 10);  // cowling
     box(sx - 0.1, sx + 0.1, -1.38, -1.3, 0.02, 0.23, 5);          // intake
-    box(sx - 0.125, sx + 0.125, -1.68, -1.62, -0.01, 0.26, 12);   // ring
-    disc(sx, -1.685, 0.125, 0.09, 5, -1);                          // fan
+    box(sx - 0.125, sx + 0.125, -1.66, -1.62, -0.01, 0.26, 10);   // nozzle collar
+    box(sx - 0.085, sx + 0.085, -1.74, -1.66, 0.04, 0.2, 10);     // steering nozzle
+    disc(sx, -1.745, 0.12, 0.06, 5, -1);                          // nozzle mouth
+    box(sx - 0.1, sx + 0.1, -1.79, -1.75, 0.2, 0.26, 4);          // reverse bucket, raised
   }
   // ---- navigation lights ----
   const bowL = sec[NS - 3][0];
@@ -1438,8 +1440,26 @@ function ensureShadowTarget(){
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 const sparks = [];
+// Water jet spray: ballistic droplets thrown from the pod nozzles (the rooster tail),
+// slowed by air, pulled down by gravity, splashing back into the lake.
 function updateSparks(dt){
-  for (let i = sparks.length - 1; i >= 0; i--){ const k = sparks[i]; k.life -= dt; if (k.life <= 0){ sparks.splice(i, 1); continue; } k.x += k.vx*dt; k.y += k.vy*dt; }
+  const drag = Math.exp(-dt*0.9);
+  for (let i = sparks.length - 1; i >= 0; i--){
+    const k = sparks[i]; k.life -= dt;
+    k.vx *= drag; k.vy *= drag; k.vz -= 9.8*dt;
+    k.x += k.vx*dt; k.y += k.vy*dt; k.z += k.vz*dt; k.size += dt*k.grow;
+    if (k.z < 0 || k.life <= 0){
+      if (k.z < 0 && Math.random() < 0.12 && bankDist(k.x, k.y) > 0) spawnFoam(k.x, k.y, k.vx*0.2, k.vy*0.2, 0.9 + Math.random()*0.6, 0.18 + Math.random()*0.15, 0.5);
+      sparks.splice(i, 1);
+    }
+  }
+}
+function throwSpray(x, y, ex, ey, speed, up, n, spread, size){
+  for (let i=0;i<n && sparks.length < 1100;i++){
+    const sp = speed*(0.65 + Math.random()*0.6), j = spread;
+    sparks.push({ x, y, z: 0.15, vx: ex*sp + (Math.random()-0.5)*j + boat.vx*0.25, vy: ey*sp + (Math.random()-0.5)*j + boat.vy*0.25,
+                  vz: up*(0.55 + Math.random()*0.6), life: 2.5, max: 2.5, size: size*(0.7 + Math.random()*0.6), grow: 0.25 + Math.random()*0.3, seed: Math.random() });
+  }
 }
 
 /* ======================================================================
@@ -1624,6 +1644,7 @@ function thrusterState(side){
 function jump(){                                              // pods fire straight down: the boat leaves the water
   if (state !== 'run' || boat.z > 0.01 || boat.boost < 0.3) return;
   boat.vz = 6.5; boat.z = 0.001; boat.boost -= 0.3; boat.jumpT = 0.35;
+  for (let i=0;i<16;i++){ const a = Math.random()*Math.PI*2; throwSpray(boat.x, boat.y, Math.cos(a), Math.sin(a), 4, 3, 5, 1.5, 0.22); }
   for (let i=0;i<18;i++){ const a = Math.random()*Math.PI*2; spawnFoam(boat.x + Math.cos(a)*0.9, boat.y + Math.sin(a)*1.3, Math.cos(a)*3, Math.sin(a)*3, 1.0, 0.5, 0.85); }
 }
 
@@ -1702,7 +1723,7 @@ function gatherSources(rs){
   src.push([b.x + fx*0.2 - nx*0.5, b.y + fy*0.2 - ny*0.5, 0.35, -0.006*k]);
   src.push([b.x - fx*1.2, b.y - fy*1.2, 0.40, -0.010*k]);                  // stern draws water in
   const prop = Math.abs(b.throttle);
-  src.push([b.x - fx*1.45, b.y - fy*1.45, 0.30, 0.012*prop*Math.sin(time*38)]);  // propeller churn
+  for (const side of [-1, 1]){ const t = thrusterState(side); if (t.open > 0.13) src.push([t.x + Math.sin(t.dir)*0.6, t.y - Math.cos(t.dir)*0.6, 0.35, 0.016*t.open*Math.sin(time*31 + side)]); }   // jet churn
   for (const f of floaters){
     const sp = Math.hypot(f.vx, f.vy);
     if (sp > 0.6 && src.length < MAX_SRC - 4 && Math.hypot(f.x - b.x, f.y - b.y) < 30) src.push([f.x, f.y, 0.4, 0.01*Math.min(sp, 6)*Math.sin(time*9 + f.seed*30)]);
@@ -1780,19 +1801,20 @@ function update(dt){
   }
   updateParticles(dt);
   updateFloaters(dt);
-  if (state !== 'over'){                                      // glow_particle sparks from the jets
+  if (state !== 'over'){                                      // water jets: rooster tail and white water at each pod
     for (const side of [-1, 1]){
-      const t = thrusterState(side), open = t.down > 0 ? 1.5 : t.open, ex = Math.sin(t.dir), ey = -Math.cos(t.dir);
-      let ns = Math.floor(open*30*dt + Math.random());
-      while (ns-- > 0 && sparks.length < 200){
-        const sp = 3 + Math.random()*4, spread = t.down > 0 ? 3 : 1.2;
-        sparks.push({ x: t.x, y: t.y, vx: (t.down > 0 ? 0 : ex*sp) + (Math.random() - 0.5)*spread + boat.vx*0.5,
-                      vy: (t.down > 0 ? 0 : ey*sp) + (Math.random() - 0.5)*spread + boat.vy*0.5, life: 0.25 + Math.random()*0.3, max: 0.55 });
-      }
+      const t = thrusterState(side), ex = Math.sin(t.dir), ey = -Math.cos(t.dir);
+      if (t.down > 0){ throwSpray(t.x, t.y, 0, 0, 0, 5.5, Math.floor(120*dt) + 1, 5, 0.25); continue; }
+      if (t.open < 0.13 || boat.z > 0.05) continue;
+      const reversing = Math.abs(((t.dir - boat.th) % (2*Math.PI) + 3*Math.PI) % (2*Math.PI) - Math.PI) > 2.2;
+      const up = reversing ? 1.6 + 2.0*t.open : 1.2 + 5.2*t.open*t.open + (boat.boosting ? 1.6 : 0);
+      throwSpray(t.x, t.y, ex, ey, 3 + 6.5*t.open, up, Math.floor(t.open*100*dt + Math.random()), 0.7 + 0.8*t.open, 0.13 + 0.12*t.open);
+      if (Math.random() < t.open*dt*30) spawnFoam(t.x + ex*0.3, t.y + ey*0.3, ex*2 + boat.vx*0.3, ey*2 + boat.vy*0.3, 1.6 + Math.random(), 0.32 + 0.2*t.open, 0.75);   // churned white water
     }
   }
   if (boat.splash > 0){                                       // landing after a jump
     for (let i=0;i<26*boat.splash;i++){ const a = Math.random()*Math.PI*2, r = 0.6 + Math.random()*0.8; spawnFoam(boat.x + Math.cos(a)*r, boat.y + Math.sin(a)*r*1.4, Math.cos(a)*4*boat.splash, Math.sin(a)*4*boat.splash, 1.4, 0.55, 0.9); }
+    for (let i=0;i<12;i++){ const a = Math.random()*Math.PI*2; throwSpray(boat.x, boat.y, Math.cos(a), Math.sin(a), 3*boat.splash, 3.5*boat.splash, 6, 1.5, 0.2); }
     cam.shake = Math.max(cam.shake, 0.35*boat.splash); boat.splashSim = boat.splash; boat.splash = 0;
   }
 
@@ -1895,24 +1917,6 @@ function drawScene(){
   // glow pass content: next gate marker, jet light on the water, beams, flares, balls, sparks
   const ng = gates[nextGate];
   if (ng && state !== 'over') pushQuad(ng.x, ng.y, ng.gap, 0.3, Math.atan2(ng.rad[1], ng.rad[0]), 12, 0, 0, 0, 0, 0);
-  if (state !== 'over'){
-    const night = 0.25 + 0.75*(1 - SKY.day);
-    for (const side of [-1, 1]){
-      const t = thrusterState(side);
-      if (t.down > 0){                                         // jump: jets straight down, a flash on the water
-        pushQuad(t.x, t.y, 1.8, 1.8, 0, 11, 0, 1.8, 1.8, 1.0, 1.0);
-        pushQuad(t.x, t.y, 0.35, 0.35, 0, 9, 0, 1.0 + t.down, 0, 0, 0);
-        continue;
-      }
-      if (t.open <= 0.01) continue;
-      const L = 0.5 + 3.4*t.open, ax = -Math.sin(t.dir), ay = Math.cos(t.dir);
-      pushQuad(t.x - ax*L*0.45, t.y - ay*L*0.45, 1.2 + L*0.35, 1.2 + L*0.55, t.dir, 11, 0, 1.2 + L*0.35, 1.2 + L*0.55, night, t.open);
-      pushQuad(t.x - ax*L*0.5, t.y - ay*L*0.5, 0.2, L*0.5, t.dir, 7, side, L, t.open, 0, 0);
-      pushQuad(t.x - ax*0.5, t.y - ay*0.5, 0.3, 0.5, t.dir, 8, side, 1, t.open, 0, 0);
-      pushQuad(t.x, t.y, 0.2, 0.2, t.dir, 9, side, t.open, 0, 0, 0);
-    }
-  }
-  for (const k of sparks) pushQuad(k.x, k.y, 0.08, 0.08, 0, 10, 0, k.life/k.max, 0, 0, 0);
 
   gl.useProgram(sprProg); gl.bindVertexArray(sprVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, sprBuf);
@@ -1942,6 +1946,21 @@ function drawScene(){
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
   drawMeshes(false, camX, camY, halfX, halfY);
   gl.disable(gl.DEPTH_TEST);
+
+  // 8. jet spray in the air, drawn over the boat (a droplet at height z shows z*tan(tilt) further up the screen)
+  if (sparks.length){
+    const start = sprCount, lift = SIN_T/COS_T;
+    for (const k of sparks){
+      const a = Math.min(1, k.life/0.4)*Math.min(1, k.z*3 + 0.3)*0.36/(1 + k.size*1.5);   // finer droplets show, the mist thins out
+      pushSprite(k.x, k.y + k.z*lift, k.size, 0, 6, k.seed, k.size, 0, a, 0);
+    }
+    gl.useProgram(sprProg); gl.bindVertexArray(sprVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, sprBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, start*6*FLOATS*4, sprData, start*6*FLOATS, (sprCount - start)*6*FLOATS);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, start*6, (sprCount - start)*6);
+    gl.disable(gl.BLEND);
+  }
   updateArrow(camX, camY, halfX, halfY);
 }
 
