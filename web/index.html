@@ -12,7 +12,7 @@
   }
   html,body{margin:0;height:100%;background:#0a2a33;overflow:hidden;color:var(--ink);
     font:15px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-user-select:none;user-select:none}
-  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;image-rendering:pixelated}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
   #hud{pointer-events:none}
   #speedo{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);text-align:center;font-weight:600;font-size:15px;letter-spacing:.04em;
     font-variant-numeric:tabular-nums;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.45)}
@@ -52,10 +52,12 @@
   #arrow{position:fixed;left:0;top:0;width:36px;height:36px;display:none;color:var(--accent);font-size:30px;line-height:36px;text-align:center;
     text-shadow:0 2px 8px rgba(0,0,0,.6);pointer-events:none;transform-origin:18px 18px}
   .credit{font-size:12px;opacity:.7}
-  #keyhelp{position:fixed;left:16px;top:14px;font-size:12px;color:#fff;opacity:.7;text-shadow:0 1px 6px rgba(0,0,0,.5);pointer-events:none;transition:opacity 1.2s}
-  #keyhelp.fade{opacity:0}
+  #helpbtn{position:fixed;left:16px;top:14px;width:24px;height:24px;border-radius:50%;border:1px solid rgba(255,255,255,.55);background:transparent;
+    color:#fff;font:600 13px/22px system-ui,sans-serif;padding:0;cursor:pointer;opacity:.75}
+  #helpbtn:hover{opacity:1}
+  #helppanel{position:fixed;left:16px;top:46px;font-size:12px;line-height:1.7;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.55);letter-spacing:.04em}
   .card{background:rgba(8,32,40,.45)!important;border-color:rgba(255,255,255,.15)!important}
-  @media (pointer:coarse){#keyhelp{display:none}}
+  
   .intro{pointer-events:auto;text-align:center;transform:translateY(-110px);color:#fff;text-shadow:0 1px 10px rgba(0,0,0,.45)}
   .intro h1{margin:0 0 14px;font-size:30px;font-weight:300;letter-spacing:.32em;text-transform:uppercase}
   #boatsel{display:flex;gap:18px;justify-content:center;font-size:13px;letter-spacing:.06em}
@@ -75,11 +77,12 @@
 
 <div id="hud">
   <div id="speedo"><span id="spd">0 km/h</span><div class="bar"><i id="boostbar"></i></div></div>
-  <div id="clockbox"><span id="clock">06:00</span><label id="pixbox" title="Lower resolution for weaker computers">pixels <input id="pix" type="range" min="1" max="6" step="1" value="1"></label></div>
+  <div id="clockbox"><span id="clock">06:00</span></div>
   <span id="dist" hidden></span><span id="gates" hidden></span><i id="hp" hidden></i>
 </div>
 <div id="arrow">&#10148;</div>
-<div id="keyhelp">W thrust &nbsp; S brake &nbsp; A/D steer &nbsp; Q/E strafe &nbsp; Shift boost &nbsp; Space jump &nbsp; 1 to 5 boat &nbsp; H help</div>
+<button id="helpbtn" aria-label="Controls">?</button>
+<div id="helppanel" class="hide">W&nbsp;thrust<br>S&nbsp;brake<br>A&nbsp;D&nbsp;steer<br>Q&nbsp;E&nbsp;strafe<br>Shift&nbsp;boost<br>Space&nbsp;jump<br>1&ndash;5&nbsp;boat<br>R&nbsp;restart</div>
 <div id="toast"></div>
 
 <div id="start" class="panel">
@@ -929,6 +932,11 @@ void main(){
     res = vec4(0.97, 0.99, 1.0, clamp(a, 0.0, 1.0));
 
   /* ---- additive glow types: output is premultiplied color ---- */
+  } else if (type == 13){                                   // a water droplet: small, clear, with a highlight
+    vec2 n = q/vQ.x; float r = length(n);
+    float a = (1.0 - smoothstep(0.55, 1.0, r))*vQ.z;
+    vec3 c = mix(vec3(0.72, 0.88, 0.98), vec3(1.0), 1.0 - smoothstep(0.0, 0.55, length(n - vec2(-0.3, 0.3))));
+    res = vec4(c, a);
   } else if (type == 7){                                    // beam: beam_core inside beam_outer
     float L = vQ.x, open = vQ.y;
     float v = clamp((L*0.5 - q.y)/L, 0.0, 1.0);             // 0 at the nozzle, 1 at the tip
@@ -968,7 +976,7 @@ void main(){
     float line = exp(-pow(q.y/0.07, 2.0)), dash = step(0.45, fract(q.x*1.2 - uTime*1.5));
     res = vec4(vec3(1.0, 0.85, 0.4)*line*dash*(0.55 + 0.45*sin(uTime*4.0))*0.6, 1.0);
   }
-  o = type >= 7 ? res : vec4(res.rgb*uLitS, res.a);
+  o = (type >= 7 && type < 13) ? res : vec4(res.rgb*uLitS, res.a);
 }`;
 
 /* ---------------- KayKit meshes (CC0, Kay Lousberg) ----------------
@@ -1612,8 +1620,10 @@ function updateSparks(dt){
 function throwSpray(x, y, ex, ey, speed, up, n, spread, size){
   for (let i=0;i<n && sparks.length < 1100;i++){
     const sp = speed*(0.65 + Math.random()*0.6), j = spread;
-    sparks.push({ x, y, z: 0.15, vx: ex*sp + (Math.random()-0.5)*j + boat.vx*0.25, vy: ey*sp + (Math.random()-0.5)*j + boat.vy*0.25,
-                  vz: up*(0.55 + Math.random()*0.6), life: 2.5, max: 2.5, size: size*(0.7 + Math.random()*0.6), grow: 0.25 + Math.random()*0.3, seed: Math.random() });
+    const drop = Math.random() < 0.4;                          // 40% clear droplets, the rest soft spray
+    sparks.push({ x, y, z: 0.15, vx: ex*sp + (Math.random()-0.5)*j*(drop ? 1.6 : 1) + boat.vx*0.25, vy: ey*sp + (Math.random()-0.5)*j*(drop ? 1.6 : 1) + boat.vy*0.25,
+                  vz: up*(0.55 + Math.random()*(drop ? 0.9 : 0.6)), life: 2.5, max: 2.5, drop,
+                  size: drop ? 0.035 + Math.random()*0.04 : size*(0.7 + Math.random()*0.6), grow: drop ? 0 : 0.25 + Math.random()*0.3, seed: Math.random() });
   }
 }
 
@@ -1645,7 +1655,7 @@ function resetGame(){
 let helpTimer = 0;
 function startGame(){
   if (state !== 'ready' || !natureReady) return;
-  clearTimeout(helpTimer); el('keyhelp').classList.remove('fade'); helpTimer = setTimeout(() => el('keyhelp').classList.add('fade'), 8000);
+
   const u = baseFlow(boat.x, boat.y); boat.vx = u[0]; boat.vy = u[1];
   state = 'run';
   document.getElementById('start').classList.add('hide');
@@ -1684,6 +1694,7 @@ function contact(wx, wy, n, pen, kind, canHurt){
   const impact = -vn;
   if (impact > 1.0){
     cam.shake = Math.min(1, Math.max(cam.shake, impact/7));
+    throwSpray(wx, wy, n[0], n[1], impact*0.6, 1.2 + impact*0.3, Math.min(14, Math.floor(impact*3)), 1.4, 0.12);
     for (let i=0;i<Math.min(8, impact*1.6);i++) spawnFoam(wx + (Math.random()-0.5)*0.6, wy + (Math.random()-0.5)*0.6, n[0]*impact*0.3 + (Math.random()-0.5)*2, n[1]*impact*0.3 + (Math.random()-0.5)*2, 1.2+Math.random(), 0.45, 0.6);
   }
   if (false){                                                   // open map: bumps, no damage
@@ -1774,6 +1785,7 @@ function updateFloaters(dt){
       if (rel < 0){
         const j = -1.7*rel/(1/f.m + 1);                          // a beach ball weighs almost nothing (big ones a bit more)
         f.vx += nx*j/f.m; f.vy += ny*j/f.m; boat.vx -= nx*j; boat.vy -= ny*j;
+        if (-rel > 2) throwSpray(f.x, f.y, nx, ny, -rel*0.5, 1.5 + -rel*0.25, Math.min(16, Math.floor(-rel*2)), 1.2, 0.12);
         if (-rel > 2) for (let i=0;i<5;i++) spawnFoam(f.x, f.y, nx*2 + (Math.random()-0.5)*2, ny*2 + (Math.random()-0.5)*2, 0.9, 0.35, 0.7);
       }
     }
@@ -2114,7 +2126,8 @@ function drawScene(){
   if (sparks.length){
     const start = sprCount, lift = SIN_T/COS_T;
     for (const k of sparks){
-      const a = Math.min(1, k.life/0.4)*Math.min(1, k.z*3 + 0.3)*0.36/(1 + k.size*1.5);   // finer droplets show, the mist thins out
+      if (k.drop){ pushSprite(k.x, k.y + k.z*lift, k.size, 0, 13, k.seed, k.size, 0, Math.min(1, k.life/0.3)*0.9, 0); continue; }
+      const a = Math.min(1, k.life/0.4)*Math.min(1, k.z*3 + 0.3)*0.36/(1 + k.size*1.5);   // the mist thins out as it spreads
       pushSprite(k.x, k.y + k.z*lift, k.size, 0, 6, k.seed, k.size, 0, a, 0);
     }
     gl.useProgram(sprProg); gl.bindVertexArray(sprVao);
@@ -2166,16 +2179,16 @@ const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'l
 addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT'){ if (e.code === 'Enter') submitScore(); return; }   // typing a name
   if (/^Digit[1-5]$/.test(e.code)){ selectBoat(+e.code.slice(5) - 1); return; }
-  if (e.code === 'KeyH'){ el('keyhelp').classList.toggle('fade'); return; }
+  if (e.code === 'KeyH'){ el('helppanel').classList.toggle('hide'); return; }
   if (e.code === 'Space'){ e.preventDefault(); if (state === 'ready') startGame(); jump(); return; }
   const k = keymap[e.code];
   if (k){ input[k] = true; e.preventDefault(); if (state === 'ready' && k !== 'boost') startGame(); }
-  else if (e.code === 'KeyT'){ toonWater = !toonWater; toast(toonWater ? 'Toon water' : 'Standard water'); try { localStorage.setItem('riverrun.water', toonWater ? 'toon' : 'standard'); } catch(err) {} }
   else if (e.code === 'KeyR' || (state === 'over' && (e.code === 'Space' || e.code === 'Enter'))){ resetGame(); startGame(); }
 });
 addEventListener('keyup', e => { const k = keymap[e.code]; if (k) input[k] = false; });
 addEventListener('blur', () => { for (const k in input) input[k] = false; });
 el('go').addEventListener('click', startGame);
+el('helpbtn').addEventListener('click', e => { el('helppanel').classList.toggle('hide'); e.currentTarget.blur(); });
 el('boatsel').addEventListener('click', e => { const i = e.target.dataset && e.target.dataset.i; if (i !== undefined) selectBoat(+i); });
 el('submit').addEventListener('click', submitScore);
 try { el('nick').value = localStorage.getItem('riverrun.name') || ''; } catch(e) {}
@@ -2188,14 +2201,9 @@ document.querySelectorAll('#touch button').forEach(b => {
 });
 
 /* ---------- resize and loop ---------- */
-let PIXEL = 1;
-try { PIXEL = Math.min(6, Math.max(1, (+localStorage.getItem('riverrun.pixel')) || 1)); } catch(e) {}
-el('pix').value = PIXEL;
-el('pix').addEventListener('input', e => { PIXEL = +e.target.value; try { localStorage.setItem('riverrun.pixel', String(PIXEL)); } catch(err) {} });
-el('pix').addEventListener('change', e => e.target.blur());       // keep the keyboard for the boat
 function resize(){
   // Cap the pixel count (about 1080p worth) so integrated graphics stay smooth on large or high density screens.
-  const dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(2.3e6/Math.max(1, innerWidth*innerHeight)))/PIXEL;   // PIXEL: the pixels slider
+  const dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(2.3e6/Math.max(1, innerWidth*innerHeight)));
   const w = Math.max(1, Math.floor(innerWidth*dpr)), h = Math.max(1, Math.floor(innerHeight*dpr));
   if (canvas.width !== w || canvas.height !== h){ canvas.width = w; canvas.height = h; }
 }
