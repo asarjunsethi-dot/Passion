@@ -58,9 +58,9 @@
 
 <div id="hud">
   <div class="chip"><span class="k">Distance</span><span class="v" id="dist">0 m</span></div>
-  <div class="chip"><span class="k">Gates</span><span class="v" id="gates">0</span></div>
+  <div class="chip"><span class="k">Top speed</span><span class="v" id="gates">0</span></div>
   <div class="chip"><span class="k">Speed</span><span class="v" id="spd">0 km/h</span></div>
-  <div class="chip"><span class="k">Hull</span><div class="bar"><i id="hp"></i></div><span class="k" style="margin-top:6px">Boost</span><div class="bar"><i id="boostbar" style="background:#5fd4ff"></i></div></div>
+  <div class="chip"><span class="k">Boost</span><div class="bar" style="display:none"><i id="hp"></i></div><div class="bar"><i id="boostbar" style="background:#5fd4ff"></i></div></div>
   <div class="chip"><span class="k">Time</span><span class="v" id="clock">06:00</span></div>
 </div>
 <div id="arrow">&#10148;</div>
@@ -69,11 +69,10 @@
 <div id="start" class="panel">
   <div class="card">
     <h1>River Run</h1>
-    <p>Lap the island. Thread the buoy gates in order, follow the arrow, stay off the rocks. A full day passes every ten minutes.</p>
+    <p>An open lake to roam. Circle the island, drift with boost, ram the floating buoys around. A full day passes every ten minutes.</p>
     <div class="keys"><b>W</b><b>A</b><b>S</b><b>D</b></div>
-    <p>W throttle, S brake and reverse, A and D steer, Shift boost. T switches between standard and toon water.</p>
+    <p>W throttle, S brake and reverse, A and D steer, Shift boost, R back to the start. T switches the water style.</p>
     <button class="go" id="go">Loading the forest...</button>
-    <p class="credit">Nature models: KayKit Forest Nature Pack by Kay Lousberg (CC0)</p>
   </div>
 </div>
 
@@ -177,7 +176,7 @@ function generateGates(){
   const ringR = th => islandR(th) + (outerR(th) - islandR(th))*0.87;
   spawn.x = Math.cos(SPAWN_TH)*ringR(SPAWN_TH); spawn.y = Math.sin(SPAWN_TH)*ringR(SPAWN_TH);
   gates = []; obsGrid = new Map();
-  const NG = 8;
+  const NG = 0;                                               // open map: no gates
   for (let i=0;i<NG;i++){
     const th = SPAWN_TH + 0.5 + i*(Math.PI*2/NG) + (R() - 0.5)*0.3;
     // the route weaves: near the outer shore, then near the island, so the scenery stays in view
@@ -227,8 +226,6 @@ function generateProps(M){
   const nearSpawnOrGate = (x, y, d) => Math.hypot(x - spawn.x, y - spawn.y) < d + 6 || gates.some(g => Math.hypot(x - g.x, y - g.y) < d + g.gap);
 
   // landmark on the island: the biggest broadleaf tree in a small clearing, rocks beside it
-  const hero = species[0][species[0].length - 1];
-  place(hero, LAKE.I*0.08, LAKE.I*0.05, 1.25, hero.radius*1.25);
   const heroRock = big[0];
   place(heroRock, -LAKE.I*0.35, -LAKE.I*0.25, 1.0, heroRock.base);
 
@@ -243,9 +240,7 @@ function generateProps(M){
       if (free(x, y, m.radius*sc, 0.78)) place(m, x, y, sc, m.radius*sc);
     }
   }
-  trees(9000, () => landPt(3, 62), 3.5);
-  trees(500, islandPt, 3.0);
-  for (let t=0;t<700;t++){                                   // dead trees: clearings only
+  for (let t=0;t<0;t++){                                     // trees and dead trees removed: open map
     const [x, y] = t < 600 ? landPt(5, 60) : islandPt(); if (-bankDist(x, y) < 4) continue;
     if (forest(x, y) > 0.4 || R() > 0.25) continue;
     const m = pick(bare), sc = 0.85 + R()*0.35;
@@ -273,7 +268,7 @@ function generateProps(M){
       if (free(x, y, m.radius*sc, 0.9)) place(m, x, y, sc, m.radius*sc);
     }
   }
-  bushes(9000, () => landPt(1.4, 62)); bushes(500, islandPt);
+
   const rockyShore = (x, y) => vnoise2(x*0.05 + 11, y*0.05 - 4, 31) > 0.56;
   for (let t=0;t<2600;t++){                                  // beach stones, mostly on rocky stretches
     const [x, y] = t < 2200 ? landPt(0.2, 3.2) : islandPt(); const s = -bankDist(x, y);
@@ -291,8 +286,8 @@ function generateProps(M){
     const p = place(m, x, y, sc, m.base*sc, -0.12 - R()*0.25);
     gridAdd(obsGrid, { x, y, r: m.base*sc*0.85, rock: true, seed: R(), prop: p });
   }
-  for (const p of props.slice()){                            // grass tufts at the feet of trees and rocks
-    if (p.z < 0 || R() > 0.4) continue;
+  for (const p of []){                                       // KayKit grass tufts removed: only the BinbunGrass grass remains
+    if (p.z < 0 || R() > 0.6) continue;
     for (let k = 1 + Math.floor(R()*3); k > 0; k--){
       const a = R()*Math.PI*2, d = (p.m.base*p.s) + 0.3 + R()*1.6, x = p.x + Math.cos(a)*d, y = p.y + Math.sin(a)*d;
       const m = pick(grass), sc = 0.8 + R()*0.5;
@@ -617,10 +612,9 @@ void main(){
     vec2 j1 = vec2(0.37, 0.61);
 
     /* ---- waves ---- */
-    float wave = 0.5 + ((sampleWave(uWave, p, d0, vec2(0.0)).r*w0 + sampleWave(uWave, p, d1, j1).r*w1) - 0.5)*vn;
-    vec3 nA = sampleWave(uWaveN, p, d0, vec2(0.0)).rgb*2.0 - 1.0;
-    vec3 nB = sampleWave(uWaveN, p, d1, j1).rgb*2.0 - 1.0;
-    vec3 nmap = normalize(nA*w0 + nB*w1);
+    // calm lake: the ambient wave layers are switched off, only the live simulation (wake, rocks) moves the surface
+    float wave = 0.0;
+    vec3 nmap = vec3(0.0, 0.0, 1.0);
     vec2 simG = vec2(0.0); float hs = 0.0;
     if (uHasSim > 0.5){
       float dx = uWorld/uSimN;
@@ -649,8 +643,7 @@ void main(){
 
     /* ---- foam ---- */
     float edgeFoam = clamp((EDGE_FOAM_DEPTH_SIZE - D)/EDGE_FOAM_DEPTH_SIZE, 0.0, 1.0);
-    float gust = 0.45 + 0.75*fbm(p*0.025 + vec2(uTime*0.01, -uTime*0.006));   // wind gusts: whitecaps come in patches
-    float foam = max(edgeFoam, wave*WAVE_FOAM_AMOUNT*gust);
+    float foam = max(edgeFoam, wave*WAVE_FOAM_AMOUNT);
     float fA = texture(uFoam, (p - d0)*0.5).r, fB = texture(uFoam, (p - d1)*0.5 + j1).r;
     float foamShape = 1.0 - clamp(0.5 + ((fA*w0 + fB*w1) - 0.5)*vn, 0.0, 1.0);
     foam = clamp((foam - FOAM_START)/(FOAM_END - FOAM_START), 0.0, 1.0);
@@ -1426,7 +1419,8 @@ const particles = [];
 function resetGame(){
   boat.x = spawn.x; boat.y = spawn.y; boat.th = spawn.th; boat.vx = 0; boat.vy = 0; boat.w = 0;
   boat.hp = 100; boat.steer = 0; boat.throttle = 0; boat.flash = 0; boat.roll = 0; boat.pitch = 0; boat.boost = 1; boat.sink = 0;
-  score = { gates:0, dist:0 }; nextGate = 0; lap = 0;
+  score = { gates:0, dist:0, top:0 }; nextGate = 0; lap = 0;
+  spawnFloaters();
   particles.length = 0; sparks.length = 0;
   cam.x = boat.x; cam.y = boat.y + 5; cam.shake = 0;
   state = 'ready';
@@ -1476,7 +1470,7 @@ function contact(wx, wy, n, pen, kind, canHurt){
     cam.shake = Math.min(1, Math.max(cam.shake, impact/7));
     for (let i=0;i<Math.min(8, impact*1.6);i++) spawnFoam(wx + (Math.random()-0.5)*0.6, wy + (Math.random()-0.5)*0.6, n[0]*impact*0.3 + (Math.random()-0.5)*2, n[1]*impact*0.3 + (Math.random()-0.5)*2, 1.2+Math.random(), 0.45, 0.6);
   }
-  if (canHurt && kind !== 'buoy' && impact > 1.6){
+  if (false){                                                   // open map: bumps, no damage
     boat.hp = Math.max(0, boat.hp - (impact-1.6)*5.5);
     boat.flash = 1;
     if (boat.hp <= 0) wreck();
@@ -1520,6 +1514,49 @@ function checkGates(px, py){                    // gates count only in order, cr
   if (s0 < 0 && s1 >= 0 && Math.abs((boat.x - g.x)*g.rad[0] + (boat.y - g.y)*g.rad[1]) < g.gap){
     score.gates++; nextGate = (nextGate + 1) % gates.length;
     if (nextGate === 0){ lap++; toast('Lap ' + lap + ' complete  +50'); } else toast('Gate cleared  +50');
+  }
+}
+
+const floaters = [];
+function spawnFloaters(){
+  const R = rng(SEED ^ 0xbeef);
+  floaters.length = 0;
+  for (let t = 0; t < 400 && floaters.length < 30; t++){
+    const th = R()*Math.PI*2, ri = islandR(th), ro = outerR(th), r = ri + 6 + R()*(ro - ri - 12);
+    const x = Math.cos(th)*r, y = Math.sin(th)*r;
+    if (bankDist(x, y) < 4 || Math.hypot(x - spawn.x, y - spawn.y) < 10) continue;
+    if (floaters.some(f => Math.hypot(f.x - x, f.y - y) < 3)) continue;
+    floaters.push({ x, y, vx: 0, vy: 0, r: 0.45, col: Math.floor(R()*3), seed: R() });
+  }
+}
+function updateFloaters(dt){
+  const c = Math.cos(boat.th), s = Math.sin(boat.th);
+  for (const f of floaters){
+    const u = baseFlow(f.x, f.y), k = Math.min(1, dt*0.9);
+    f.vx += (u[0] - f.vx)*k; f.vy += (u[1] - f.vy)*k;           // water drag pulls toward the current
+    f.x += f.vx*dt; f.y += f.vy*dt;
+    const d = bankDist(f.x, f.y) - f.r;
+    if (d < 0){ const n = bankNormal(f.x, f.y), vn = f.vx*n[0] + f.vy*n[1]; f.x -= n[0]*d; f.y -= n[1]*d; if (vn < 0){ f.vx -= 1.6*vn*n[0]; f.vy -= 1.6*vn*n[1]; } }
+    for (const [lx, ly] of hullPts){                              // the hull shoves buoys (buoy mass 0.15, boat 1)
+      const wx = boat.x + lx*c - ly*s, wy = boat.y + lx*s + ly*c;
+      const dx = f.x - wx, dy = f.y - wy, dist = Math.hypot(dx, dy), pen = f.r + HULL_R - dist;
+      if (pen <= 0 || dist < 1e-5) continue;
+      const nx = dx/dist, ny = dy/dist;
+      f.x += nx*pen; f.y += ny*pen;
+      const rel = (f.vx - boat.vx)*nx + (f.vy - boat.vy)*ny;
+      if (rel < 0){
+        const j = -1.6*rel/(1/0.15 + 1);
+        f.vx += nx*j/0.15; f.vy += ny*j/0.15; boat.vx -= nx*j; boat.vy -= ny*j;
+        if (-rel > 2) for (let i=0;i<5;i++) spawnFoam(f.x, f.y, nx*2 + (Math.random()-0.5)*2, ny*2 + (Math.random()-0.5)*2, 0.9, 0.35, 0.7);
+      }
+    }
+  }
+  for (let i=0;i<floaters.length;i++) for (let j=i+1;j<floaters.length;j++){   // buoys bump each other
+    const a = floaters[i], b = floaters[j], dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy), pen = a.r + b.r - dist;
+    if (pen <= 0 || dist < 1e-5) continue;
+    const nx = dx/dist, ny = dy/dist; a.x -= nx*pen/2; a.y -= ny*pen/2; b.x += nx*pen/2; b.y += ny*pen/2;
+    const rel = (b.vx - a.vx)*nx + (b.vy - a.vy)*ny;
+    if (rel < 0){ const j = -0.8*rel; a.vx -= nx*j; a.vy -= ny*j; b.vx += nx*j; b.vy += ny*j; }
   }
 }
 
@@ -1597,6 +1634,10 @@ function gatherSources(rs){
   src.push([b.x - fx*1.2, b.y - fy*1.2, 0.40, -0.010*k]);                  // stern draws water in
   const prop = Math.abs(b.throttle);
   src.push([b.x - fx*1.45, b.y - fy*1.45, 0.30, 0.012*prop*Math.sin(time*38)]);  // propeller churn
+  for (const f of floaters){
+    const sp = Math.hypot(f.vx, f.vy);
+    if (sp > 0.6 && src.length < MAX_SRC - 4 && Math.hypot(f.x - b.x, f.y - b.y) < 30) src.push([f.x, f.y, 0.4, 0.01*Math.min(sp, 6)*Math.sin(time*9 + f.seed*30)]);
+  }
   for (const o of near){
     if (!o.rock || src.length >= MAX_SRC) continue;
     if (Math.hypot(o.x - b.x, o.y - b.y) > 22) continue;
@@ -1646,7 +1687,7 @@ function update(dt){
   } else {
     const n = Math.max(1, Math.ceil(dt/(1/120))), h = dt/n;
     for (let i=0;i<n;i++) stepBoat(h, state === 'run');
-    if (state === 'run'){ checkGates(prevX, prevY); score.dist += Math.hypot(boat.x - prevX, boat.y - prevY); }
+    if (state === 'run'){ score.dist += Math.hypot(boat.x - prevX, boat.y - prevY); score.top = Math.max(score.top || 0, Math.hypot(boat.vx, boat.vy)); }
   }
 
   // wake foam
@@ -1667,6 +1708,7 @@ function update(dt){
     spawnFoam(boat.x + fx*0.9 + nx*0.55*side, boat.y + fy*0.9 + ny*0.55*side, u[0] + nx*side*1.1, u[1] + ny*side*1.1, 1.1+Math.random()*0.7, 0.22+Math.random()*0.15, 0.7);
   }
   updateParticles(dt);
+  updateFloaters(dt);
   if (state !== 'over'){                                      // glow_particle sparks from the jets
     const open = Math.abs(boat.throttle);
     let ns = Math.floor(open*60*dt + Math.random());
@@ -1771,6 +1813,7 @@ function drawScene(){
     const id = o.gate === nextGate ? o.buoy : (o.gate < nextGate ? 2 : 3);
     pushSprite(o.x, o.y, 0.75, 0, 3, (o.x*0.37 + o.y*0.11) % 1, id, 0, 0, 0);
   }
+  for (const f of floaters){ pushSprite(f.x + 0.12, f.y - 0.16, 0.8, 0, 0, 0, 0.5, 0, 0, 0.3); pushSprite(f.x, f.y, 0.75, 0, 3, f.seed, f.col, 0, 0, 0); }
   const normalCount = sprCount;
 
   // glow pass content: next gate marker, jet light on the water, beams, flares, balls, sparks
@@ -1842,7 +1885,7 @@ const hudCache = {};
 function setText(id, text){ if (hudCache[id] !== text){ hudCache[id] = text; el(id).textContent = text; } }
 function updateHud(force){
   setText('dist', Math.floor(score.dist) + ' m');
-  setText('gates', String(score.gates));
+  setText('gates', Math.round((score.top || 0)*3.6) + ' km/h');
   setText('spd', Math.round(Math.hypot(boat.vx, boat.vy)*3.6) + ' km/h');
   const hrs = (6 + skyClock/CYCLE*24) % 24;
   setText('clock', String(Math.floor(hrs)).padStart(2, '0') + ':' + String(Math.floor((hrs % 1)*60)).padStart(2, '0') + (SKY.sun[2] >= 0 ? ' \u2600' : ' \u263E'));
@@ -1899,13 +1942,15 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 resetGame();
-loadNature();
+// The KayKit pack is no longer used (no trees, bushes, grass tufts or rocks): the map is open water, beaches and BinbunGrass.
+natureReady = true;
+el('go').textContent = 'Press any movement key to launch';
 requestAnimationFrame(frame);
 
 // Handle for automated checks.
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; }, get score(){ return score; },
   startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, step(dt){ update(dt); }, baseFlow,
-  get gates(){ return gates; }, get nextGate(){ return nextGate; }, get props(){ return props.length; }, get ready(){ return natureReady; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; }, setToon(v){ toonWater = v; } };
+  get gates(){ return gates; }, get floaters(){ return floaters; }, get nextGate(){ return nextGate; }, get props(){ return props.length; }, get ready(){ return natureReady; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; }, setToon(v){ toonWater = v; } };
 })();
 </script>
 </body>
