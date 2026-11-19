@@ -60,7 +60,13 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
 Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, F watch others, H help, R reset.
 Gamepad (standard mapping, `pollGamepad`): left stick steers and throttles, right trigger throttle, left trigger brake (analog),
 A jump, X boost, bumpers strafe, Y watch, Start restart. Touch (`#touch`, coarse pointers only): a stick for analog steering and
-throttle, plus boost and jump buttons. All feed `input.ax` / `input.ay` (analog) beside the key booleans.
+throttle, plus boost and jump buttons. Gamepad axes feed `input.ax` / `input.ay` beside the key booleans.
+Touch steers by direction: the left thumb lands anywhere in `#tzone` (lower left 55% x 64%), a floating stick appears
+under it and follows the thumb past its rim; `input.tx` / `input.ty` give a screen direction and `update()` turns the boat
+to face it (camera is north up) with yaw damping, throttling by stick distance and easing off while facing away. Measured:
+90 degree turns settle in 1.2 to 1.5 s with 4 to 6 degrees of overshoot. Release coasts. Vibration on jumps and hard bumps
+(`buzz`). Phones (`COARSE`, coarse pointer) start at 1 million pixels and run a 256 cell wave simulation with the wave
+constant scaled so wakes keep their real speed; browser gestures (pull to refresh, bounce, long press) are blocked.
 
 Smoothness: `steadyDt` steps steady frames by the display's own interval (median of the last 15) so timestamp jitter
 does not shimmer, while a real hitch keeps its length. The water blends the last two wave simulation steps (`uSimA`), so

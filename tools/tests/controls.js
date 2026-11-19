@@ -34,20 +34,26 @@ const ARGS = ['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swifts
     return { estimateMs: +(R.frameEst*1000).toFixed(2), lastStepsMs: out.slice(-3).map(v => +(v*1000).toFixed(2)), hitchMs: +(hitch*1000).toFixed(1) }; });
   console.log('timing', JSON.stringify(timing));
   await p.close();
-  // 3. touch: a phone, drag the stick up and to the right
+  // 3. touch on a phone: put the thumb down in the lower left, drag right; the boat should turn to face east and go
   const ctx = await browser.newContext({ ...devices['iPhone 13'] });
   const t = await ctx.newPage(); t.on('pageerror', e => errors.push(e.message));
   await t.goto('http://127.0.0.1:8765/index.html?seed=12345&offline=1&rain=0');
   await t.waitForFunction(() => window.__river && __river.ready);
   await t.evaluate(() => __river.setManual(true));
-  const box = await t.locator('#stick').boundingBox();
-  const cx = box.x + box.width/2, cy = box.y + box.height/2;
-  await t.mouse.move(cx, cy); await t.mouse.down(); await t.mouse.move(cx + box.width*0.3, cy - box.height*0.45, { steps: 4 });
-  const touch = await t.evaluate(() => { const R = __river; const a = { ax: +R.input.ax.toFixed(2), ay: +R.input.ay.toFixed(2), state: R.state };
-    const th0 = R.boat.th; for (let i = 0; i < 90; i++) R.step(1/60); a.turnedDegrees = +((R.boat.th - th0)*180/Math.PI).toFixed(0); a.speed = +Math.hypot(R.boat.vx, R.boat.vy).toFixed(1); return a; });
+  const vp = t.viewportSize(), sx = vp.width*0.25, sy = vp.height*0.8;
+  // drag north, then swing the thumb to the west without lifting it; time each turn and its overshoot
+  const settle = (target) => t.evaluate((want) => { const R = __river; let tSet = null, worst = 0, x0 = R.boat.x, y0 = R.boat.y;
+    for (let i = 0; i < 300; i++){ R.step(1/60);
+      const err = Math.atan2(Math.sin(R.boat.th - want), Math.cos(R.boat.th - want))*180/Math.PI;
+      if (tSet === null && Math.abs(err) < 5) tSet = i/60; else if (tSet !== null) worst = Math.max(worst, Math.abs(err)); }
+    return { secondsToFace: tSet, overshootDegrees: +worst.toFixed(1), metersMoved: +Math.hypot(R.boat.x - x0, R.boat.y - y0).toFixed(1) }; }, target);
+  await t.mouse.move(sx, sy); await t.mouse.down(); await t.mouse.move(sx, sy - 90, { steps: 5 });
+  const touch = { state: await t.evaluate(() => __river.state), north: await settle(0) };
+  await t.mouse.move(sx - 60, sy - 60, { steps: 3 }); await t.mouse.move(sx - 150, sy - 60, { steps: 4 });
+  touch.west = await settle(Math.PI/2);
   await t.mouse.up();
-  touch.afterRelease = await t.evaluate(() => [__river.input.ax, __river.input.ay]);
-  touch.stickVisible = await t.locator('#stick').isVisible();
+  touch.afterRelease = await t.evaluate(() => [__river.input.tOn, __river.input.tx, __river.input.ty]);
+  touch.layout = await t.evaluate(() => { const r = __river; return { pixelCap: r.pixelCap, canvas: [document.getElementById('c').width, document.getElementById('c').height], hint: document.getElementById('go').textContent }; });
   console.log('touch', JSON.stringify(touch));
   await t.screenshot({ path: (process.env.SHOTS || '/tmp/shots/') + 'touch.png' });
   console.log('errors:', errors.join(' | ') || 'none');

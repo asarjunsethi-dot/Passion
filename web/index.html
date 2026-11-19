@@ -31,6 +31,7 @@
     text-shadow:0 2px 12px rgba(0,0,0,.5);opacity:0;transition:opacity .25s,transform .6s;pointer-events:none;text-align:center}
   #toast.on{opacity:1;transform:translate(-50%,-14px)}
   .panel{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  #start{z-index:5}                                           /* boat names and the name field stay tappable above the thumb area */
   #helpbtn{position:fixed;left:16px;top:14px;width:24px;height:24px;border-radius:50%;border:1px solid rgba(255,255,255,.55);background:transparent;
     color:#fff;font:600 13px/22px system-ui,sans-serif;padding:0;cursor:pointer;opacity:.75}
   #helpbtn:hover{opacity:1}
@@ -47,13 +48,25 @@
   .intro .hint{margin:16px 0 0;font-size:12px;opacity:.7;letter-spacing:.1em;cursor:pointer}
   .hide{display:none!important}
   #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
-  #touch{position:fixed;left:0;right:0;bottom:18px;display:none;justify-content:space-between;padding:0 18px;pointer-events:none}
-  #stick{pointer-events:auto;position:relative;width:132px;height:132px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(8,32,40,.25);touch-action:none}
-  #stick i{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;background:rgba(255,255,255,.55);will-change:transform}
-  .tbtns{pointer-events:auto;display:flex;gap:12px;align-items:flex-end}
-  #touch button{width:64px;height:64px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(8,32,40,.35);color:#fff;font-size:24px;touch-action:none}
-  #touch button.on{background:rgba(255,255,255,.3)}
-  @media (pointer:coarse){#touch{display:flex} #speedo{bottom:170px}}   /* on touch screens the speed sits above the controls */
+  #touch{display:none}
+  #tzone{position:fixed;left:0;bottom:0;width:55%;height:64%;pointer-events:auto;touch-action:none}   /* the left thumb's area: the stick appears where it lands */
+  #stick{position:fixed;left:0;top:0;width:124px;height:124px;margin:-62px 0 0 -62px;border-radius:50%;border:1px solid rgba(255,255,255,.35);
+    background:rgba(8,32,40,.22);pointer-events:none;opacity:.45;transition:opacity .2s;will-change:transform}
+  #stick.act{opacity:1;transition:none}
+  #stick i{position:absolute;left:50%;top:50%;width:50px;height:50px;margin:-25px 0 0 -25px;border-radius:50%;background:rgba(255,255,255,.6);will-change:transform}
+  .tbtns{position:fixed;right:18px;bottom:22px;display:flex;gap:14px;align-items:flex-end;pointer-events:auto}
+  #touch button{width:66px;height:66px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(8,32,40,.35);color:#fff;font-size:24px;touch-action:none;
+    -webkit-tap-highlight-color:transparent}
+  #touch button.on{background:rgba(255,255,255,.32)}
+  #helptouch{display:none}
+  @media (pointer:coarse){
+    #touch{display:block}
+    html,body{overscroll-behavior:none;touch-action:none;-webkit-touch-callout:none}   /* no pull to refresh, bounce or long press menu */
+    #speedo{bottom:150px}
+    #nick{font-size:16px}                                     /* 16px or more: iPhones do not zoom into the field */
+    #helpkeys{display:none} #helptouch{display:inline}
+  }
+  @media (pointer:coarse) and (orientation:landscape){#speedo{bottom:18px}}
 </style>
 </head>
 <body>
@@ -65,7 +78,7 @@
 </div>
 <div id="tags"></div>
 <button id="helpbtn" aria-label="Controls">?</button>
-<div id="helppanel" class="hide">W&nbsp;thrust<br>S&nbsp;brake<br>A&nbsp;D&nbsp;steer<br>Q&nbsp;E&nbsp;strafe<br>Shift&nbsp;boost<br>Space&nbsp;jump<br>1&ndash;5&nbsp;boat<br>F&nbsp;watch others<br>R&nbsp;restart<br>gamepad&nbsp;and&nbsp;touch&nbsp;work&nbsp;too</div>
+<div id="helppanel" class="hide"><span id="helpkeys">W&nbsp;thrust<br>S&nbsp;brake<br>A&nbsp;D&nbsp;steer<br>Q&nbsp;E&nbsp;strafe<br>Shift&nbsp;boost<br>Space&nbsp;jump<br>1&ndash;5&nbsp;boat<br>F&nbsp;watch others<br>R&nbsp;restart<br>gamepad&nbsp;works&nbsp;too</span><span id="helptouch">left&nbsp;thumb: drag where to go<br>further&nbsp;=&nbsp;faster<br>let&nbsp;go&nbsp;to&nbsp;coast<br>&#8679;&nbsp;boost &nbsp;&#10514;&nbsp;jump<br>tap&nbsp;the&nbsp;sailor&nbsp;count&nbsp;to&nbsp;watch</span></div>
 <div id="toast"></div>
 
 <div id="start" class="panel">
@@ -78,6 +91,7 @@
 </div>
 
 <div id="touch">
+  <div id="tzone"></div>
   <div id="stick"><i></i></div>
   <div class="tbtns"><button data-k="boost" aria-label="Boost">&#8679;</button><button data-k="jump" aria-label="Jump">&#10514;</button></div>
 </div>
@@ -286,7 +300,10 @@ vec3 skyColor(vec3 dir){
    The height field wraps around a WORLD sized window that follows the boat.
    Each step: advect by the river current, run the 2D wave equation, damp near
    the banks, and inject impulses from the hull, the propeller and the rocks.  */
-const SIM_N = 512, SIM_WORLD = 96, SIM_DT = 1/60, SIM_C2 = 0.10, MAX_SRC = 16;
+// Phones get a 256 cell simulation (a quarter of the work). The wave constant scales with the cell
+// size squared so wakes still spread at the same speed in meters.
+const COARSE = (() => { try { return matchMedia('(pointer:coarse)').matches; } catch(e) { return false; } })();
+const SIM_N = COARSE ? 256 : 512, SIM_WORLD = 96, SIM_DT = 1/60, SIM_C2 = 0.10*(SIM_N/512)*(SIM_N/512), MAX_SRC = 16;
 const simFS = `#version 300 es
 precision highp float;
 in vec2 vUv; out vec4 o;
@@ -1360,8 +1377,9 @@ let time = 0;
 const shaderTime = () => time % 4096;
 // Keys set the booleans; a gamepad or the touch stick set the analog axes (ax steer, left positive;
 // ay throttle, forward positive) and pad flags. Both are combined in update().
+// The touch stick instead gives a screen direction (tx, ty; ty down) while tOn: the boat turns to face it.
 const input = { up:false, down:false, left:false, right:false, boost:false, strafeL:false, strafeR:false,
-                ax:0, ay:0, padBoost:false, padStrafe:0, touchBoost:false };
+                ax:0, ay:0, padBoost:false, padStrafe:0, touchBoost:false, tx:0, ty:0, tOn:false };
 const cam = { x:0, y:0, half:14, shake:0 };
 const particles = [];
 
@@ -1402,6 +1420,7 @@ function contact(wx, wy, n, pen, kind, other){
   boat.vx -= tx*vt*0.12*half; boat.vy -= ty*vt*0.12*half;
   const impact = -vn;
   if (impact > 1.0){
+    if (impact > 3 && cam.shake < 0.3) buzz(18);              // a hard bump, once per knock
     cam.shake = Math.min(1, Math.max(cam.shake, impact/7));
     throwSpray(wx, wy, n[0], n[1], impact*0.6, 1.2 + impact*0.3, Math.min(14, Math.floor(impact*3)), 1.4, 0.12, boat);
     for (let i=0;i<Math.min(8, impact*1.6);i++) spawnFoam(wx + (Math.random()-0.5)*0.6, wy + (Math.random()-0.5)*0.6, n[0]*impact*0.3 + (Math.random()-0.5)*2, n[1]*impact*0.3 + (Math.random()-0.5)*2, 1.2+Math.random(), 0.45, 0.6);
@@ -1531,7 +1550,7 @@ function thrusterState(b, side){
 }
 function jump(){                                              // pods fire straight down: the boat leaves the water
   if (state !== 'run' || boat.z > 0.01 || boat.boost < 0.3) return;
-  boat.vz = 6.5; boat.z = 0.001; boat.boost -= 0.3; boat.jumpT = 0.35;
+  boat.vz = 6.5; boat.z = 0.001; boat.boost -= 0.3; boat.jumpT = 0.35; buzz(15);
   jumpBurst(boat);
 }
 function jumpBurst(b){
@@ -1853,8 +1872,19 @@ function update(dt){
   updateWeather(dt);
   updateSky(dt);
   updateSparks(dt);
-  const target = clampN((input.up ? 1 : 0) - (input.down ? 1 : 0) + (+input.ay || 0), -1, 1);
-  const steerT = clampN((input.left ? 1 : 0) - (input.right ? 1 : 0) + (+input.ax || 0), -1, 1);
+  let target = clampN((input.up ? 1 : 0) - (input.down ? 1 : 0) + (+input.ay || 0), -1, 1);
+  let steerT = clampN((input.left ? 1 : 0) - (input.right ? 1 : 0) + (+input.ax || 0), -1, 1);
+  if (input.tOn){
+    // Touch steers by direction: point the stick where the boat should go (the camera is always north up).
+    // It turns toward that heading, damped by its own turn rate so it settles without wobbling, and throttles
+    // by how far the stick is pushed, easing off while it still faces away so it can pivot round.
+    const m = Math.min(1, Math.hypot(input.tx, input.ty));
+    if (m > 0.18){
+      const diff = wrapAngle(Math.atan2(-input.tx, -input.ty) - boat.th);
+      steerT = clampN(diff*1.8 - boat.w*0.35, -1, 1);
+      target = m*(0.25 + 0.75*Math.max(0, Math.cos(diff)));
+    } else { steerT = 0; target = 0; }
+  }
   boat.throttle += (target - boat.throttle)*Math.min(1, dt*(Math.abs(target) > Math.abs(boat.throttle) ? 4 : 7));
   // steering eases in, lets go a little faster, and swings across quickest so a counter steer feels immediate
   const steerRate = steerT === 0 ? 10 : steerT*boat.steer < 0 ? 14 : 7;
@@ -2102,7 +2132,7 @@ addEventListener('keydown', e => {
   else if (e.code === 'KeyR'){ resetGame(); startGame(); }
 });
 addEventListener('keyup', e => { const k = keymap[e.code]; if (k) input[k] = false; });
-addEventListener('blur', () => { for (const k in input) input[k] = false; });
+addEventListener('blur', () => { for (const k in input) input[k] = typeof input[k] === 'number' ? 0 : false; });
 el('go').addEventListener('click', startGame);
 el('helpbtn').addEventListener('click', e => { el('helppanel').classList.toggle('hide'); e.currentTarget.blur(); });
 el('netbox').addEventListener('click', cycleWatch);
@@ -2111,26 +2141,37 @@ nick.value = myName;
 nick.addEventListener('change', () => { setName(nick.value); nick.value = myName; });
 nick.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === 'Escape'){ setName(nick.value); nick.value = myName; nick.blur(); } });
 el('boatsel').addEventListener('click', e => { const i = e.target.dataset && e.target.dataset.i; if (i !== undefined) selectBoat(+i); });
-/* Touch: drag the stick for analog steering (sideways) and throttle (up forward, down brake);
-   hold the arrow button to boost, tap the other to jump. */
+/* Touch: the left thumb lands anywhere in the lower left area and the stick appears under it. Drag
+   toward where the boat should go; the further, the faster. If the thumb drifts past the rim the
+   stick follows it, so a reversal is always one short swipe. Release to coast. The right buttons:
+   hold the arrow to boost, tap the other to jump. A short buzz marks jumps and hard bumps.        */
+const buzz = ms => { try { if (COARSE && navigator.vibrate) navigator.vibrate(ms); } catch(e) {} };
 {
-  const stick = el('stick'), knob = stick.firstElementChild;
-  let sid = null;
-  const moveStick = e => {
-    const r = stick.getBoundingClientRect(), R = r.width*0.5;
-    let dx = (e.clientX - r.left - R)/R, dy = (e.clientY - r.top - R)/R; const l = Math.hypot(dx, dy);
-    if (l > 1){ dx /= l; dy /= l; }
-    const dz = v => Math.abs(v) < 0.12 ? 0 : (v - Math.sign(v)*0.12)/0.88;   // a small dead zone around the centre
-    input.ax = -dz(dx); input.ay = -dz(dy);
-    knob.style.transform = 'translate(' + (dx*R*0.62).toFixed(1) + 'px,' + (dy*R*0.62).toFixed(1) + 'px)';
+  const zone = el('tzone'), stick = el('stick'), knob = stick.firstElementChild, R = 56;
+  let sid = null, ox = 0, oy = 0;
+  const place = (x, y) => { stick.style.transform = 'translate(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px)'; };
+  const rest = () => place(28 + 62, innerHeight - 28 - 62);   // the faint hint position, bottom left
+  rest(); addEventListener('resize', () => { if (sid === null) rest(); });
+  const move = e => {
+    let dx = e.clientX - ox, dy = e.clientY - oy; const l = Math.hypot(dx, dy);
+    if (l > R){ ox += dx*(1 - R/l); oy += dy*(1 - R/l); dx *= R/l; dy *= R/l; place(ox, oy); }   // the stick follows the thumb
+    input.tx = dx/R; input.ty = dy/R;
+    knob.style.transform = 'translate(' + dx.toFixed(1) + 'px,' + dy.toFixed(1) + 'px)';
   };
-  const endStick = e => { if (e.pointerId !== sid) return; sid = null; input.ax = 0; input.ay = 0; knob.style.transform = ''; };
-  stick.addEventListener('pointerdown', e => {
-    e.preventDefault(); sid = e.pointerId; stick.setPointerCapture(sid); moveStick(e);
+  const end = e => {
+    if (e.pointerId !== sid) return;
+    sid = null; input.tOn = false; input.tx = input.ty = 0;
+    stick.classList.remove('act'); knob.style.transform = ''; rest();
+  };
+  zone.addEventListener('pointerdown', e => {
+    e.preventDefault(); if (sid !== null) return;
+    sid = e.pointerId; zone.setPointerCapture(sid); ox = e.clientX; oy = e.clientY;
+    stick.classList.add('act'); place(ox, oy); input.tOn = true; input.tx = input.ty = 0;
     if (watching) setWatching(null); if (state === 'ready') startGame();
   });
-  stick.addEventListener('pointermove', e => { if (e.pointerId === sid) moveStick(e); });
-  stick.addEventListener('pointerup', endStick); stick.addEventListener('pointercancel', endStick);
+  zone.addEventListener('pointermove', e => { if (e.pointerId === sid) move(e); });
+  zone.addEventListener('pointerup', end); zone.addEventListener('pointercancel', end);
+  el('touch').addEventListener('contextmenu', e => e.preventDefault());
   document.querySelectorAll('#touch button').forEach(b => {
     const k = b.dataset.k;
     const on = e => { e.preventDefault(); b.classList.add('on'); if (state === 'ready') startGame(); if (k === 'jump') jump(); else input.touchBoost = true; };
@@ -2168,10 +2209,10 @@ function pollGamepad(){
 }
 
 /* ---------- resize, automatic render scale and loop ----------
-   The pixel budget starts at about 1080p worth (2.3 million pixels). When frames
+   The pixel budget starts at about 1080p worth (2.3 million pixels; 1 million on phones). When frames
    run slow for two seconds it drops by a fifth (down to 0.6 million); after eight
    smooth seconds it climbs back, but never above a budget that was slow before. */
-let pixelCap = 2.3e6, pixelCeil = 2.3e6, dtAvg = 1/60, slowT = 0, fastT = 0;
+let pixelCap = COARSE ? 1.0e6 : 2.3e6, pixelCeil = 2.3e6, dtAvg = 1/60, slowT = 0, fastT = 0;   // phones start lighter and earn more pixels
 function adaptScale(raw){
   if (raw > 0.2 || document.hidden) return;                    // a stall or a hidden tab says nothing about the GPU
   dtAvg += (raw - dtAvg)*0.05;
@@ -2211,7 +2252,7 @@ selectBoat(boatIndex, true);
 resetGame();
 requestAnimationFrame(frame);
 netConnect();
-try { if (matchMedia('(pointer:coarse)').matches) el('go').textContent = 'drag the stick to sail'; } catch(e) {}
+if (COARSE) el('go').textContent = 'touch the lower left and drag where to go';
 
 // Handle for automated checks.
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; },
