@@ -48,9 +48,12 @@
   .hide{display:none!important}
   #nogl{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:#0a2a33}
   #touch{position:fixed;left:0;right:0;bottom:18px;display:none;justify-content:space-between;padding:0 18px;pointer-events:none}
-  #touch div{pointer-events:auto;display:grid;grid-template-columns:repeat(2,64px);gap:10px}
-  #touch button{height:64px;border-radius:16px;border:1px solid var(--edge);background:var(--panel);color:var(--ink);font-size:22px}
-  @media (pointer:coarse){#touch{display:flex}}
+  #stick{pointer-events:auto;position:relative;width:132px;height:132px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(8,32,40,.25);touch-action:none}
+  #stick i{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;background:rgba(255,255,255,.55);will-change:transform}
+  .tbtns{pointer-events:auto;display:flex;gap:12px;align-items:flex-end}
+  #touch button{width:64px;height:64px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(8,32,40,.35);color:#fff;font-size:24px;touch-action:none}
+  #touch button.on{background:rgba(255,255,255,.3)}
+  @media (pointer:coarse){#touch{display:flex} #speedo{bottom:170px}}   /* on touch screens the speed sits above the controls */
 </style>
 </head>
 <body>
@@ -62,7 +65,7 @@
 </div>
 <div id="tags"></div>
 <button id="helpbtn" aria-label="Controls">?</button>
-<div id="helppanel" class="hide">W&nbsp;thrust<br>S&nbsp;brake<br>A&nbsp;D&nbsp;steer<br>Q&nbsp;E&nbsp;strafe<br>Shift&nbsp;boost<br>Space&nbsp;jump<br>1&ndash;5&nbsp;boat<br>F&nbsp;watch others<br>R&nbsp;restart</div>
+<div id="helppanel" class="hide">W&nbsp;thrust<br>S&nbsp;brake<br>A&nbsp;D&nbsp;steer<br>Q&nbsp;E&nbsp;strafe<br>Shift&nbsp;boost<br>Space&nbsp;jump<br>1&ndash;5&nbsp;boat<br>F&nbsp;watch others<br>R&nbsp;restart<br>gamepad&nbsp;and&nbsp;touch&nbsp;work&nbsp;too</div>
 <div id="toast"></div>
 
 <div id="start" class="panel">
@@ -75,8 +78,8 @@
 </div>
 
 <div id="touch">
-  <div><button data-k="left">&#8630;</button><button data-k="right">&#8631;</button></div>
-  <div><button data-k="down">&#9660;</button><button data-k="up">&#9650;</button></div>
+  <div id="stick"><i></i></div>
+  <div class="tbtns"><button data-k="boost" aria-label="Boost">&#8679;</button><button data-k="jump" aria-label="Jump">&#10514;</button></div>
 </div>
 
 <div id="nogl"><div><h1>WebGL 2 is not available</h1><p>This game needs a browser with WebGL 2 support.</p></div></div>
@@ -374,7 +377,7 @@ const waterFS = `#version 300 es
 precision highp float;
 in vec2 vNdc; out vec4 o;
 uniform vec2 uCam, uHalf;
-uniform float uTime, uWorld, uSimN, uHasSim, uSinT, uCosT;
+uniform float uTime, uWorld, uSimN, uHasSim, uSinT, uCosT, uSimA;
 uniform vec2 uSimC;
 uniform float uRain;
 uniform sampler2D uSim, uFoam, uCaus;
@@ -464,8 +467,11 @@ void main(){
     vec2 simG = vec2(0.0);
     if (uHasSim > 0.5){
       float dx = uWorld/uSimN;
-      simG = vec2(texture(uSim, (p+vec2(dx,0.0))/uWorld).r - texture(uSim, (p-vec2(dx,0.0))/uWorld).r,
-                  texture(uSim, (p+vec2(0.0,dx))/uWorld).r - texture(uSim, (p-vec2(0.0,dx))/uWorld).r)/(2.0*dx);
+      // each texel holds the newest height (r) and the one before (g): blend them by how far the clock
+      // is between simulation steps, so the wake moves smoothly at any display rate
+      vec2 wA = vec2(uSimA, 1.0 - uSimA);
+      simG = vec2(dot(texture(uSim, (p+vec2(dx,0.0))/uWorld).rg, wA) - dot(texture(uSim, (p-vec2(dx,0.0))/uWorld).rg, wA),
+                  dot(texture(uSim, (p+vec2(0.0,dx))/uWorld).rg, wA) - dot(texture(uSim, (p-vec2(0.0,dx))/uWorld).rg, wA))/(2.0*dx);
       vec2 off = abs(p - uSimC);                                   // the height field wraps: fade it out before its edge
       simG *= 1.0 - smoothstep(uWorld*0.36, uWorld*0.46, max(off.x, off.y));
     }
@@ -716,11 +722,12 @@ const RAIN_VS = `#version 300 es
 precision highp float;
 uniform vec2 uCam, uHalf, uWind, uRes;
 uniform ivec2 uCell0; uniform int uCols, uPer;
-uniform float uCosT, uLift, uTime, uWidth, uBlur, uSize;
+uniform float uCosT, uSinT, uLift, uTime, uWidth, uBlur, uSize, uPerF;
 out vec2 vQ; out float vFade; flat out float vKind;
 uint hashU(uint x){ x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
 float rnd(uint x){ return float(hashU(x) >> 8)/16777216.0; }
 vec2 toNdc(vec2 g){ return vec2((g.x - uCam.x)/uHalf.x, (g.y - uCam.y)*uCosT/uHalf.y); }
+float depthOf(vec2 g, float z){ return ((g.y - uCam.y)*uSinT - z*uCosT)/400.0; }   // the mesh shader's depth, so boats hide what is behind them
 void main(){
   int cl = gl_InstanceID/uPer, n = gl_InstanceID - cl*uPer;
   ivec2 cell = uCell0 + ivec2(cl % uCols, cl/uCols);
@@ -740,13 +747,16 @@ void main(){
     vec2 tP = toNdc(vec2(tail.x, tail.y + vz*(tl + uBlur)*uLift))*uRes*0.5;
     vec2 ax = hP - tP; float L = max(length(ax), 1.0); vec2 dir = ax/L;
     vec2 P = mix(tP, hP, c.y*0.5 + 0.5) + vec2(-dir.y, dir.x)*c.x*uWidth*(0.8 + 0.5*big);
-    gl_Position = vec4(P/(uRes*0.5), 0.0, 1.0);
+    float zd = mix(depthOf(tail, vz*(tl + uBlur)), depthOf(head, vz*tl), c.y*0.5 + 0.5);
+    gl_Position = vec4(P/(uRes*0.5), zd, 1.0);
     vKind = 0.0; vFade = smoothstep(0.0, 0.12, age);          // fades in as it appears, so nothing pops
   } else {                                                    // landed: a small crown of spray that spreads and fades
     float a = (age - fall)/splash;
-    gl_Position = vec4(toNdc(land + c*(0.04 + 0.11*a)*uSize*(0.7 + 0.6*big)), 0.0, 1.0);
+    vec2 g = land + c*(0.04 + 0.11*a)*uSize*(0.7 + 0.6*big);
+    gl_Position = vec4(toNdc(g), depthOf(g, 0.02), 1.0);
     vKind = 1.0; vFade = (1.0 - a)*(1.0 - a);
   }
+  vFade *= clamp(uPerF - float(n), 0.0, 1.0);                // the last drop of a cell fades in or out as the rain changes
 }`;
 const RAIN_FS = `#version 300 es
 precision highp float;
@@ -1236,9 +1246,12 @@ function wxAt(t){                                             // t: seconds of r
 }
 const RAIN_FORCED = QUERY.has('rain') ? Math.min(1, Math.max(0, +QUERY.get('rain') || 0)) : null;
 const weather = { rain: 0, cloud: 0, wet: 0, regime: 0, gust: 1, forced: RAIN_FORCED };
+const wxTarget = [0, 0, 0];
+let wxNext = 0;
 function updateWeather(dt, first){
   const now = Date.now()/1000;
-  let [r, c, reg] = wxAt(now);
+  if (first || now >= wxNext){ const w = wxAt(now); wxTarget[0] = w[0]; wxTarget[1] = w[1]; wxTarget[2] = w[2]; wxNext = now + 0.5; }   // twice a second is plenty: it eases anyway
+  let r = wxTarget[0], c = wxTarget[1], reg = wxTarget[2];
   if (weather.forced !== null){ r = weather.forced; c = Math.min(1, r*1.4); }
   const k = first ? 1 : Math.min(1, dt/3);                    // ease, so a long frame never jumps the weather
   weather.rain += (r - weather.rain)*k; weather.cloud += (c - weather.cloud)*k; weather.regime = reg;
@@ -1283,7 +1296,7 @@ function setLight(u){
   if (u.uLightDir) gl.uniform3fv(u.uLightDir, SKY.dir);
   if (u.uLightCol) gl.uniform3fv(u.uLightCol, SKY.col);
   if (u.uAmbient) gl.uniform3fv(u.uAmbient, SKY.amb);
-  if (u.uSkyClock) gl.uniform1f(u.uSkyClock, time);
+  if (u.uSkyClock) gl.uniform1f(u.uSkyClock, shaderTime());
   if (u.uCloudWind) gl.uniform2f(u.uCloudWind, 0.5, 0.5);
   if (u.uDay) gl.uniform1f(u.uDay, SKY.day);
   if (u.uSunG) gl.uniform3f(u.uSunG, SKY.sun[0], SKY.sun[2], -SKY.sun[1]);
@@ -1305,7 +1318,7 @@ function bindSkyTextures(u, first){
 // Remove item i from an unordered list in constant time (draw order of puffs does not matter).
 function dropAt(a, i){ const last = a.pop(); if (i < a.length) a[i] = last; }
 
-const sparks = [];
+const sparks = [], sparkPool = [], foamPool = [];      // finished puffs are kept for reuse
 // Water jet spray: ballistic droplets thrown from the pod nozzles (the rooster tail),
 // slowed by air, pulled down by gravity, splashing back into the lake.
 function updateSparks(dt){
@@ -1316,7 +1329,7 @@ function updateSparks(dt){
     k.x += k.vx*dt; k.y += k.vy*dt; k.z += k.vz*dt; k.size += dt*k.grow;
     if (k.z < 0 || k.life <= 0){
       if (k.z < 0 && Math.random() < 0.12 && lakeD(k.x, k.y) > 0) spawnFoam(k.x, k.y, k.vx*0.2, k.vy*0.2, 0.9 + Math.random()*0.6, 0.18 + Math.random()*0.15, 0.5);
-      dropAt(sparks, i);
+      sparkPool.push(k); dropAt(sparks, i);
     }
   }
 }
@@ -1326,9 +1339,12 @@ function throwSpray(x, y, ex, ey, speed, up, n, spread, size, bv){
   for (let i=0;i<n && sparks.length < 1100;i++){
     const sp = speed*(0.65 + Math.random()*0.6), j = spread;
     const drop = Math.random() < 0.4;                          // 40% clear droplets, the rest soft spray
-    sparks.push({ x, y, z: 0.15, vx: ex*sp + (Math.random()-0.5)*j*(drop ? 1.6 : 1) + bvx, vy: ey*sp + (Math.random()-0.5)*j*(drop ? 1.6 : 1) + bvy,
-                  vz: up*(0.55 + Math.random()*(drop ? 0.9 : 0.6)), life: 2.5, max: 2.5, drop,
-                  size: drop ? 0.035 + Math.random()*0.04 : size*(0.7 + Math.random()*0.6), grow: drop ? 0 : 0.25 + Math.random()*0.3, seed: Math.random() });
+    const k = sparkPool.pop() || {};
+    k.x = x; k.y = y; k.z = 0.15;
+    k.vx = ex*sp + (Math.random()-0.5)*j*(drop ? 1.6 : 1) + bvx; k.vy = ey*sp + (Math.random()-0.5)*j*(drop ? 1.6 : 1) + bvy;
+    k.vz = up*(0.55 + Math.random()*(drop ? 0.9 : 0.6)); k.life = 2.5; k.max = 2.5; k.drop = drop;
+    k.size = drop ? 0.035 + Math.random()*0.04 : size*(0.7 + Math.random()*0.6); k.grow = drop ? 0 : 0.25 + Math.random()*0.3; k.seed = Math.random();
+    sparks.push(k);
   }
 }
 
@@ -1339,7 +1355,13 @@ const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, steer:0, throttle:0, roll:0, pit
                jumpT:0, splash:0, splashSim:0, rs:0, spec: BOATS[0], running:false };
 let state = 'ready';                 // ready | run
 let time = 0;
-const input = { up:false, down:false, left:false, right:false, boost:false, strafeL:false, strafeR:false };
+// Shaders get the clock wrapped every 4096 s (68 minutes): a 32 bit float holds a growing clock less
+// and less precisely, which after hours would make ripples and rain stutter.
+const shaderTime = () => time % 4096;
+// Keys set the booleans; a gamepad or the touch stick set the analog axes (ax steer, left positive;
+// ay throttle, forward positive) and pad flags. Both are combined in update().
+const input = { up:false, down:false, left:false, right:false, boost:false, strafeL:false, strafeR:false,
+                ax:0, ay:0, padBoost:false, padStrafe:0, touchBoost:false };
 const cam = { x:0, y:0, half:14, shake:0 };
 const particles = [];
 
@@ -1552,14 +1574,16 @@ function boatEffects(b, dt){
 
 /* ---------- foam particles (carried along by the current) ---------- */
 function spawnFoam(x, y, vx, vy, life, size, alpha){
-  if (particles.length > 320) dropAt(particles, Math.floor(Math.random()*particles.length));
-  particles.push({ x, y, vx, vy, life, max:life, size, alpha, seed:Math.random() });
+  if (particles.length > 320){ const i = Math.floor(Math.random()*particles.length); foamPool.push(particles[i]); dropAt(particles, i); }
+  const p = foamPool.pop() || {};
+  p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.life = life; p.max = life; p.size = size; p.alpha = alpha; p.seed = Math.random();
+  particles.push(p);
 }
 function updateParticles(dt){
   const k = Math.min(1, dt*1.6);
   for (let i=particles.length-1;i>=0;i--){
     const p = particles[i]; p.life -= dt;
-    if (p.life <= 0 || lakeD(p.x, p.y) < -0.3){ dropAt(particles, i); continue; }
+    if (p.life <= 0 || lakeD(p.x, p.y) < -0.3){ foamPool.push(p); dropAt(particles, i); continue; }
     const u = baseFlow(p.x, p.y);
     p.vx += (u[0]-p.vx)*k; p.vy += (u[1]-p.vy)*k;
     p.x += p.vx*dt; p.y += p.vy*dt;
@@ -1740,7 +1764,7 @@ function remoteState(p){
     if (remotes.size >= 24) return;
     r = { id: p.i, name: '', b: 0, spec: BOATS[0], x: d[0], y: d[1], th: d[2], z: 0, vz: 0, vx: 0, vy: 0, w: 0, roll: 0, pitch: 0,
           throttle: 0, steer: 0, strafe: 0, boosting: false, running: false, jumpT: 0, splash: 0, splashSim: 0, rs: 0,
-          t: { x: d[0], y: d[1], th: d[2], z: 0, vz: 0, vx: 0, vy: 0, w: 0 }, last: 0, shown: false, tag: null, phase: Math.random()*6.28 };
+          t: { x: d[0], y: d[1], th: d[2], z: 0, vz: 0, vx: 0, vy: 0, w: 0, roll: 0, pitch: 0, throttle: 0, steer: 0, strafe: 0 }, last: 0, shown: false, tag: null, phase: Math.random()*6.28 };
     remotes.set(p.i, r);
   }
   const t = r.t, b = clampN(Math.round(d[13]), 0, BOATS.length - 1);
@@ -1750,8 +1774,8 @@ function remoteState(p){
   t.x = d[0]; t.y = d[1]; t.th = r.th + wrapAngle(d[2] - r.th);
   t.z = clampN(d[3], 0, 20); t.vz = clampN(d[4], -40, 40);
   t.vx = clampN(d[5], -60, 60); t.vy = clampN(d[6], -60, 60); t.w = clampN(d[7], -20, 20);
-  r.roll = clampN(d[8], -1, 1); r.pitch = clampN(d[9], -1, 1);
-  r.throttle = clampN(d[10], -1, 1); r.steer = clampN(d[11], -1, 1); r.strafe = clampN(d[12], -1, 1);
+  t.roll = clampN(d[8], -1, 1); t.pitch = clampN(d[9], -1, 1);
+  t.throttle = clampN(d[10], -1, 1); t.steer = clampN(d[11], -1, 1); t.strafe = clampN(d[12], -1, 1);
   const f = d[14]|0;
   r.boosting = !!(f & 1); r.running = !!(f & 2);
   if ((f & 4) && r.jumpT <= 0 && r.z < 0.05){ r.jumpT = 0.35; r.wantBurst = true; }
@@ -1779,6 +1803,9 @@ function updateRemotes(dt){
     if (Math.hypot(t.x - r.x, t.y - r.y) > 12){ r.x = t.x; r.y = t.y; r.th = t.th; }
     else { r.x += (t.x - r.x)*k; r.y += (t.y - r.y)*k; r.th += wrapAngle(t.th - r.th)*k; }
     r.z += (t.z - r.z)*Math.min(1, dt*20);
+    const kc = Math.min(1, dt*12);                            // tilt and controls glide between messages, no steps
+    r.roll += (t.roll - r.roll)*kc; r.pitch += (t.pitch - r.pitch)*kc;
+    r.throttle += (t.throttle - r.throttle)*kc; r.steer += (t.steer - r.steer)*kc; r.strafe += (t.strafe - r.strafe)*kc;
     r.vx = t.vx; r.vy = t.vy; r.w = t.w; r.vz = t.vz;
     r.jumpT = Math.max(0, r.jumpT - dt);
     if (r.wantBurst){ r.wantBurst = false; jumpBurst(r); }
@@ -1826,13 +1853,16 @@ function update(dt){
   updateWeather(dt);
   updateSky(dt);
   updateSparks(dt);
-  const target = (input.up ? 1 : 0) - (input.down ? 1 : 0);
-  const steerT = (input.left ? 1 : 0) - (input.right ? 1 : 0);
+  const target = clampN((input.up ? 1 : 0) - (input.down ? 1 : 0) + (+input.ay || 0), -1, 1);
+  const steerT = clampN((input.left ? 1 : 0) - (input.right ? 1 : 0) + (+input.ax || 0), -1, 1);
   boat.throttle += (target - boat.throttle)*Math.min(1, dt*(Math.abs(target) > Math.abs(boat.throttle) ? 4 : 7));
-  boat.steer    += (steerT - boat.steer)*Math.min(1, dt*(steerT === 0 ? 10 : 7));
-  boat.boosting = input.boost && boat.boost > 0.02 && boat.throttle > 0.3 && state === 'run';
+  // steering eases in, lets go a little faster, and swings across quickest so a counter steer feels immediate
+  const steerRate = steerT === 0 ? 10 : steerT*boat.steer < 0 ? 14 : 7;
+  boat.steer    += (steerT - boat.steer)*Math.min(1, dt*steerRate);
+  boat.boosting = (input.boost || input.padBoost || input.touchBoost) && boat.boost > 0.02 && boat.throttle > 0.3 && state === 'run';
   boat.boost = Math.min(1, Math.max(0, boat.boost + (boat.boosting ? -0.32 : 0.14)*dt));
-  boat.strafe += (((input.strafeR ? 1 : 0) - (input.strafeL ? 1 : 0)) - boat.strafe)*Math.min(1, dt*8);
+  const strafeT = clampN((input.strafeR ? 1 : 0) - (input.strafeL ? 1 : 0) + (+input.padStrafe || 0), -1, 1);
+  boat.strafe += (strafeT - boat.strafe)*Math.min(1, dt*8);
   boat.jumpT = Math.max(0, boat.jumpT - dt);
 
   updateRemotes(dt);
@@ -1884,7 +1914,7 @@ function update(dt){
 function drawScene(){
   const aspect = canvas.width/canvas.height;
   const sh = cam.shake*cam.shake*0.5;
-  const camX = cam.x + (Math.random()-0.5)*sh, camY = cam.y + (Math.random()-0.5)*sh;
+  const camX = cam.x + (Math.sin(time*31.0) + Math.sin(time*47.0 + 2.0))*0.25*sh, camY = cam.y + (Math.sin(time*37.0 + 1.0) + Math.sin(time*53.0 + 4.0))*0.25*sh;
   const halfX = cam.half*aspect, halfY = cam.half, gHalfY = halfY/COS_T;
 
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -1895,8 +1925,8 @@ function drawScene(){
   gl.useProgram(waterProg); gl.bindVertexArray(emptyVao);
   const w = waterProg.u;
   gl.uniform2f(w.uCam, camX, camY); gl.uniform2f(w.uHalf, halfX, halfY);
-  gl.uniform1f(w.uTime, time); gl.uniform1f(w.uWorld, SIM_WORLD); gl.uniform1f(w.uSimN, SIM_N);
-  gl.uniform1f(w.uHasSim, simOK ? 1 : 0); gl.uniform2f(w.uSimC, simC.x, simC.y);
+  gl.uniform1f(w.uTime, shaderTime()); gl.uniform1f(w.uWorld, SIM_WORLD); gl.uniform1f(w.uSimN, SIM_N);
+  gl.uniform1f(w.uHasSim, simOK ? 1 : 0); gl.uniform2f(w.uSimC, simC.x, simC.y); gl.uniform1f(w.uSimA, Math.min(1, simAcc/SIM_DT));
   gl.uniform1f(w.uRain, weather.rain);
   setLight(w);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, simOK ? sim.tex[sim.r] : dummyTex); gl.uniform1i(w.uSim, 0);
@@ -1916,7 +1946,7 @@ function drawScene(){
     const gust = 1 + 1.5*weather.rain;                          // grass bends harder in a storm
     gl.uniform2f(g.uWindVel, WIND_VELOCITY[0]*gust, WIND_VELOCITY[1]*gust);
     gl.uniform2i(g.uOrigin, ox, oy); gl.uniform1i(g.uCols, cols);
-    gl.uniform1f(g.uCell, GRASS_CELL); gl.uniform1f(g.uTime, time); gl.uniform1f(g.uRandomVariation, 0.0);
+    gl.uniform1f(g.uCell, GRASS_CELL); gl.uniform1f(g.uTime, shaderTime()); gl.uniform1f(g.uRandomVariation, 0.0);
     gl.uniform1f(g.uCutStart, 0.4); gl.uniform1f(g.uCutEnd, 0.6);
     setLight(g);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, grassAtlas); gl.uniform1i(g.uAtlas, 0);
@@ -1980,11 +2010,11 @@ function drawScene(){
   updateTags(cam.x, cam.y, halfX, halfY);
 }
 
-const rainPer = () => weather.rain > 0.004 ? Math.max(1, Math.round((0.3 + 0.7*Math.pow(weather.rain, 0.7))*Math.min(1, weather.rain*12)*RAIN_PER_CELL)) : 0;   // light rain still reads clearly
+const rainPer = () => weather.rain > 0.004 ? (0.3 + 0.7*Math.pow(weather.rain, 0.7))*Math.min(1, weather.rain*12)*RAIN_PER_CELL : 0;   // drops per cell (fractional); light rain still reads clearly
 let rainDrawn = 0;
 function rainCount(){ return rainDrawn; }
 function drawRain(camX, camY, halfX, halfY){
-  const per = rainPer(); rainDrawn = 0; if (!per) return;
+  const perF = rainPer(), per = Math.ceil(perF); rainDrawn = 0; if (!per) return;
   // cells whose drops can show on screen: the view, plus room for the wind drift and the height lift
   const gy = halfY/COS_T, m = 8, x0 = Math.floor((camX - halfX - m)/RAIN_CELL), x1 = Math.floor((camX + halfX + m)/RAIN_CELL);
   const y0 = Math.floor((camY - gy - m - 7)/RAIN_CELL), y1 = Math.floor((camY + gy + m)/RAIN_CELL);
@@ -1994,14 +2024,15 @@ function drawRain(camX, camY, halfX, halfY){
   gl.uniform2f(u.uCam, camX, camY); gl.uniform2f(u.uHalf, halfX, halfY);
   gl.uniform2f(u.uWind, WIND_VELOCITY[0]/wl*ws, WIND_VELOCITY[1]/wl*ws);
   gl.uniform2f(u.uRes, canvas.width, canvas.height);
-  gl.uniform2i(u.uCell0, x0, y0); gl.uniform1i(u.uCols, cols); gl.uniform1i(u.uPer, per);
-  gl.uniform1f(u.uCosT, COS_T); gl.uniform1f(u.uLift, SIN_T/COS_T); gl.uniform1f(u.uTime, time);
+  gl.uniform2i(u.uCell0, x0, y0); gl.uniform1i(u.uCols, cols); gl.uniform1i(u.uPer, per); gl.uniform1f(u.uPerF, perF);
+  gl.uniform1f(u.uCosT, COS_T); gl.uniform1f(u.uSinT, SIN_T); gl.uniform1f(u.uLift, SIN_T/COS_T); gl.uniform1f(u.uTime, shaderTime());
   gl.uniform1f(u.uWidth, Math.max(0.8, canvas.height/700)); gl.uniform1f(u.uBlur, 0.1 + 0.05*r); gl.uniform1f(u.uSize, 0.9 + 0.5*r);
   gl.uniform1f(u.uAlpha, Math.min(1, 0.55 + 0.25*r)*Math.min(1, r*15));   // fades in from the first drops
   if (u.uLitS) gl.uniform3fv(u.uLitS, SKY.lit);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(false);   // tested against the boats, never written
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, n);
-  gl.disable(gl.BLEND);
+  gl.depthMask(true); gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
   rainDrawn = n;
 }
 
@@ -2080,12 +2111,61 @@ nick.value = myName;
 nick.addEventListener('change', () => { setName(nick.value); nick.value = myName; });
 nick.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === 'Escape'){ setName(nick.value); nick.value = myName; nick.blur(); } });
 el('boatsel').addEventListener('click', e => { const i = e.target.dataset && e.target.dataset.i; if (i !== undefined) selectBoat(+i); });
-document.querySelectorAll('#touch button').forEach(b => {
-  const k = b.dataset.k;
-  const on = e => { e.preventDefault(); input[k] = true; if (watching) setWatching(null); if (state === 'ready') startGame(); };
-  const off = e => { e.preventDefault(); input[k] = false; };
-  b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
-});
+/* Touch: drag the stick for analog steering (sideways) and throttle (up forward, down brake);
+   hold the arrow button to boost, tap the other to jump. */
+{
+  const stick = el('stick'), knob = stick.firstElementChild;
+  let sid = null;
+  const moveStick = e => {
+    const r = stick.getBoundingClientRect(), R = r.width*0.5;
+    let dx = (e.clientX - r.left - R)/R, dy = (e.clientY - r.top - R)/R; const l = Math.hypot(dx, dy);
+    if (l > 1){ dx /= l; dy /= l; }
+    const dz = v => Math.abs(v) < 0.12 ? 0 : (v - Math.sign(v)*0.12)/0.88;   // a small dead zone around the centre
+    input.ax = -dz(dx); input.ay = -dz(dy);
+    knob.style.transform = 'translate(' + (dx*R*0.62).toFixed(1) + 'px,' + (dy*R*0.62).toFixed(1) + 'px)';
+  };
+  const endStick = e => { if (e.pointerId !== sid) return; sid = null; input.ax = 0; input.ay = 0; knob.style.transform = ''; };
+  stick.addEventListener('pointerdown', e => {
+    e.preventDefault(); sid = e.pointerId; stick.setPointerCapture(sid); moveStick(e);
+    if (watching) setWatching(null); if (state === 'ready') startGame();
+  });
+  stick.addEventListener('pointermove', e => { if (e.pointerId === sid) moveStick(e); });
+  stick.addEventListener('pointerup', endStick); stick.addEventListener('pointercancel', endStick);
+  document.querySelectorAll('#touch button').forEach(b => {
+    const k = b.dataset.k;
+    const on = e => { e.preventDefault(); b.classList.add('on'); if (state === 'ready') startGame(); if (k === 'jump') jump(); else input.touchBoost = true; };
+    const off = e => { e.preventDefault(); b.classList.remove('on'); if (k === 'boost') input.touchBoost = false; };
+    b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
+  });
+}
+
+/* Gamepad (standard mapping): left stick steers and, pushed forward or back, throttles; right trigger
+   throttles and left trigger brakes, both analog; A jumps, X boosts, the bumpers strafe, Y watches the
+   other sailors, Start restarts. Read once a frame. */
+const padPrev = [];
+let padOn = false;
+function pollGamepad(){
+  const list = navigator.getGamepads ? navigator.getGamepads() : null;
+  let g = null;
+  if (list) for (const p of list) if (p && p.connected && p.mapping === 'standard'){ g = p; break; }
+  if (!g){ if (padOn){ input.ax = input.ay = 0; input.padBoost = false; input.padStrafe = 0; padOn = false; } return; }
+  const dz = v => Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v)*0.15)/0.85;
+  const b = i => g.buttons[i] ? g.buttons[i].value : 0, pressed = i => !!(g.buttons[i] && g.buttons[i].pressed);
+  const lx = dz(g.axes[0] || 0), ly = dz(g.axes[1] || 0);
+  const ax = -lx, ay = clampN(Math.max(b(7), -ly) - Math.max(b(6), ly), -1, 1);
+  const any = ax !== 0 || ay !== 0 || g.buttons.some(x => x.pressed);
+  if (any || padOn){ input.ax = ax; input.ay = ay; input.padBoost = pressed(2); input.padStrafe = (pressed(5) ? 1 : 0) - (pressed(4) ? 1 : 0); }
+  if (any){
+    padOn = true; markActive();
+    if (state === 'ready' && (Math.abs(ay) > 0.2 || Math.abs(ax) > 0.2)) startGame();
+    if (watching && (Math.abs(ay) > 0.2 || Math.abs(ax) > 0.2)) setWatching(null);
+  }
+  const edge = i => pressed(i) && !padPrev[i];
+  if (edge(0)){ if (state === 'ready') startGame(); jump(); }
+  if (edge(3)) cycleWatch();
+  if (edge(9)){ resetGame(); startGame(); }
+  for (let i = 0; i < g.buttons.length; i++) padPrev[i] = pressed(i);
+}
 
 /* ---------- resize, automatic render scale and loop ----------
    The pixel budget starts at about 1080p worth (2.3 million pixels). When frames
@@ -2108,10 +2188,22 @@ addEventListener('resize', resize); resize();
 
 let last = performance.now();
 let manual = false;                  // automated checks can step the game at an exact frame time
+// Frame timestamps jitter by a millisecond or two around the display's real interval. Stepping the
+// game by the jittered value makes motion shimmer, so a steady frame is stepped by the display's
+// interval (the median of recent frames); a real hitch still gets its true length.
+const recent = new Float32Array(15), sorted = new Float32Array(15);
+let recentN = 0, frameEst = 1/60;
+function steadyDt(raw){
+  if (raw > 0.002 && raw < 0.1){
+    recent[recentN++ % recent.length] = raw;
+    if (recentN >= recent.length && recentN % 5 === 0){ sorted.set(recent); sorted.sort(); frameEst = sorted[7]; }
+  }
+  return Math.abs(raw - frameEst) < frameEst*0.25 ? frameEst : raw;
+}
 function frame(now){
   const raw = (now - last)/1000; last = now;
-  const dt = Math.min(0.05, Math.max(0.001, raw));
-  if (!manual){ adaptScale(raw); resize(); update(dt); drawScene(); }
+  const dt = Math.min(0.05, Math.max(0.001, steadyDt(raw)));
+  if (!manual){ adaptScale(raw); resize(); pollGamepad(); update(dt); drawScene(); }
   requestAnimationFrame(frame);
 }
 updateWeather(0, true);
@@ -2119,12 +2211,13 @@ selectBoat(boatIndex, true);
 resetGame();
 requestAnimationFrame(frame);
 netConnect();
+try { if (matchMedia('(pointer:coarse)').matches) el('go').textContent = 'drag the stick to sail'; } catch(e) {}
 
 // Handle for automated checks.
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; },
   startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, step(dt){ update(dt); }, baseFlow,
   get floaters(){ return floaters; }, get ready(){ return true; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; },
-  get seed(){ return SEED; }, get weather(){ return { rain: weather.rain, cloud: weather.cloud, wet: weather.wet, regime: weather.regime, drops: rainCount() }; },
+  get seed(){ return SEED; }, pollGamepad, steadyDt, get frameEst(){ return frameEst; }, get weather(){ return { rain: weather.rain, cloud: weather.cloud, wet: weather.wet, regime: weather.regime, drops: rainCount() }; },
   setRain(v){ weather.forced = v == null ? null : Math.min(1, Math.max(0, +v)); updateWeather(0, true); updateSky(0); }, wxAt, get away(){ return away; }, setIdle(ms){ lastInput = Date.now() - ms; }, setName, get pixelCap(){ return pixelCap; }, id: myId, get watching(){ return watching; }, watch: cycleWatch,
   get net(){ return { status: net.status, joined: net.joined, sent: net.sent, recv: net.recv, online: [...online.values()],
     remotes: [...remotes.values()].filter(r => r.shown).map(r => ({ id: r.id, name: r.name, b: r.b, x: r.x, y: r.y, th: r.th, z: r.z })) }; } };

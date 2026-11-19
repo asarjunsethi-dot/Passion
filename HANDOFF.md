@@ -58,6 +58,15 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
 | Render scale | `adaptScale`, `resize`, `pixelCap` | Automatic: starts at 2.3 million pixels, drops a fifth after 2 slow seconds (down to 0.6 million), climbs back after 8 smooth seconds but never above a budget that was slow. |
 
 Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, F watch others, H help, R reset.
+Gamepad (standard mapping, `pollGamepad`): left stick steers and throttles, right trigger throttle, left trigger brake (analog),
+A jump, X boost, bumpers strafe, Y watch, Start restart. Touch (`#touch`, coarse pointers only): a stick for analog steering and
+throttle, plus boost and jump buttons. All feed `input.ax` / `input.ay` (analog) beside the key booleans.
+
+Smoothness: `steadyDt` steps steady frames by the display's own interval (median of the last 15) so timestamp jitter
+does not shimmer, while a real hitch keeps its length. The water blends the last two wave simulation steps (`uSimA`), so
+wakes move evenly at 120 and 144 hertz. Shader clocks wrap every 4096 s (`shaderTime`). Camera shake is a smooth wobble.
+Other sailors' roll, pitch and controls ease between messages. Spray and foam objects are pooled (`sparkPool`, `foamPool`).
+Rain is depth tested against the boats and its density fades per drop (`uPerF`).
 URL options: `?rain=0.7` (force a rain level from 0 to 1; `?rain=0` forces dry, useful for repeatable tests), `?seed=N` (lake N, private room), `?name=Ana` (name shown to others, remembered), `?offline` (no network).
 
 ## Multiplayer details
@@ -76,7 +85,7 @@ URL options: `?rain=0.7` (force a rain level from 0 to 1; `?rain=0` forces dry, 
 ## Testing
 
 Debug handle: `window.__river` exposes `boat`, `cam`, `input`, `state`, `ready`, `floaters`, `seed`, `pixelCap`,
-`id`, `weather` (rain, cloud, wet, regime, drops drawn), `setRain(v)` (null returns to the schedule), `wxAt(seconds)`, `away`, `setIdle(ms)`, `setName(name)`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
+`id`, `pollGamepad()`, `steadyDt(raw)`, `frameEst`, `weather` (rain, cloud, wet, regime, drops drawn), `setRain(v)` (null returns to the schedule), `wxAt(seconds)`, `away`, `setIdle(ms)`, `setName(name)`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
 (update and draw), `step(dt)` (physics only, fast), `setClock(seconds)`, `startGame()`, `resetGame()`, `bankDist(x, y)`.
 
 ```bash
@@ -89,7 +98,7 @@ NODE_PATH=$(npm root -g) node tools/tests/shore.js name 150 boat 0 13
 
 Scripts in `tools/tests/`: `shore.js` (screenshot: name, clock seconds, camera x or `boat`, y, half height),
 `modes.js` (strafe, spin, brake, jump), `boats.js` and `five.js` (boat speeds and close ups), `balls.js` (ramming),
-`names.js` (name entry and the away rule, live), `multiplayer.js` (two browsers on one lake through the live Supabase service; needs the session network to allow
+`names.js` (name entry and the away rule, live), `controls.js` (fake gamepad, touch stick on a phone, frame timing), `multiplayer.js` (two browsers on one lake through the live Supabase service; needs the session network to allow
 `yghxquvblqkqyzqjfvbx.supabase.co`, which the cloud environment "Passion (River Run)" does).
 Headless Chromium uses SwiftShader, so it is slow: prefer `step()` for physics and take few screenshots.
 
