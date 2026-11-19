@@ -456,7 +456,7 @@ void main(){
     g *= rough*smoothstep(0.0, 1.2, D)*(1.0 + 0.8*uRain);            // wind with the rain roughens the lake
     vec3 drops = vec3(0.0);
     if (uRain > 0.003){
-      drops = rainRings(p, uTime, pow(uRain, 0.8));
+      drops = rainRings(p, uTime, 0.15 + 0.85*pow(uRain, 0.6));
       // and a fine, shimmering stipple from the countless drops too small to ring
       drops.xy += (vec2(vnoise(p*6.0 + vec2(uTime*4.1, -uTime*3.3)), vnoise(p*6.0 + vec2(13.7 - uTime*3.7, uTime*4.4))) - 0.5)*0.07*uRain;
       g += drops.xy*smoothstep(0.0, 0.3, D);
@@ -498,7 +498,7 @@ void main(){
     float tw = vnoise(p*2.3 + vec2(uTime*0.7, -uTime*0.5));
     float glint = smoothstep(2.5, 2.95, crest*rough)*smoothstep(0.7, 0.9, tw)*smoothstep(0.3, 1.2, D);
     lit += uLightCol*glint*mix(0.12, 3.0, uDay)*smoothstep(0.05, 0.3, uLightDir.z)*(1.0 - 0.9*uOvercast);
-    lit += (sunIn + 0.04)*drops.z*0.3*smoothstep(0.0, 0.3, D);    // ring crests and splashes catch the light
+    lit += (sunIn + 0.06)*drops.z*0.45*smoothstep(0.0, 0.3, D);    // ring crests and splashes catch the light
     // ---- foam at the shore: lapping edge and ripples rolling in ----
     if (D < 1.5){                                                  // zero further out: skip two noise sums and two fetches
       float lap = 0.18 + 0.12*sin(uTime*0.9 + fbm(p*0.15)*6.0);
@@ -762,7 +762,7 @@ void main(){
     a = (smoothstep(0.45, 0.75, r)*(1.0 - smoothstep(0.78, 1.0, r)) + (1.0 - smoothstep(0.0, 0.3, r))*0.7)*0.9;   // a ring of spray round a bright centre
   }
   if (a*vFade < 0.01) discard;
-  o = vec4(vec3(0.82, 0.87, 0.92)*min(uLitS*1.6 + 0.03, vec3(1.0)), a*vFade*uAlpha);   // lighter than the scene, so it reads on grey water
+  o = vec4(vec3(0.85, 0.9, 0.95)*min(uLitS*1.9 + 0.08, vec3(1.0)), a*vFade*uAlpha);   // clearly lighter than the scene, so it reads on grey water
 }`;
 
 /* ---------- programs, buffers ---------- */
@@ -1214,7 +1214,7 @@ function wxShower(k){
   R(); R();
   const e = R() > smooth(0.4, 0.78, reg)*0.8 ? null : {
     start: k*WX_WIN + R()*WX_WIN*0.8, build: 60 + R()*180, hold: 30 + R()*270, clear: 60 + R()*150,
-    peak: (0.15 + 0.85*Math.pow(R(), 1.1))*(0.5 + 0.5*smooth(0.45, 0.8, reg)), seed: R()*100 };
+    peak: (0.25 + 0.75*Math.pow(R(), 1.1))*(0.5 + 0.5*smooth(0.45, 0.8, reg)), seed: R()*100 };
   if (wxCache.size > 64) wxCache.clear();
   wxCache.set(k, e);
   return e;
@@ -1222,7 +1222,7 @@ function wxShower(k){
 function wxAt(t){                                             // t: seconds of real time; returns [rain, cloud cover, regime]
   const reg = wxRegime(t), front = smooth(0.74, 0.9, reg);
   let cloud = smooth(0.28, 0.75, reg)*0.75;                     // clouds thicken slowly as a spell sets in
-  let rain = front*(0.18 + 0.32*wxNoise(t, 900, 0x77f1))*(0.85 + 0.15*Math.sin(t*0.013));
+  let rain = front*(0.25 + 0.35*wxNoise(t, 900, 0x77f1))*(0.85 + 0.15*Math.sin(t*0.013));
   const k0 = Math.floor(t/WX_WIN);
   for (let k = k0 - 2; k <= k0 + 1; k++){
     const e = wxShower(k); if (!e) continue;
@@ -1980,7 +1980,7 @@ function drawScene(){
   updateTags(cam.x, cam.y, halfX, halfY);
 }
 
-const rainPer = () => weather.rain > 0.004 ? Math.max(1, Math.round(Math.pow(weather.rain, 0.85)*RAIN_PER_CELL)) : 0;
+const rainPer = () => weather.rain > 0.004 ? Math.max(1, Math.round((0.3 + 0.7*Math.pow(weather.rain, 0.7))*Math.min(1, weather.rain*12)*RAIN_PER_CELL)) : 0;   // light rain still reads clearly
 let rainDrawn = 0;
 function rainCount(){ return rainDrawn; }
 function drawRain(camX, camY, halfX, halfY){
@@ -1996,8 +1996,8 @@ function drawRain(camX, camY, halfX, halfY){
   gl.uniform2f(u.uRes, canvas.width, canvas.height);
   gl.uniform2i(u.uCell0, x0, y0); gl.uniform1i(u.uCols, cols); gl.uniform1i(u.uPer, per);
   gl.uniform1f(u.uCosT, COS_T); gl.uniform1f(u.uLift, SIN_T/COS_T); gl.uniform1f(u.uTime, time);
-  gl.uniform1f(u.uWidth, Math.max(0.6, canvas.height/900)); gl.uniform1f(u.uBlur, 0.09 + 0.05*r); gl.uniform1f(u.uSize, 0.8 + 0.5*r);
-  gl.uniform1f(u.uAlpha, 0.32 + 0.3*r);
+  gl.uniform1f(u.uWidth, Math.max(0.8, canvas.height/700)); gl.uniform1f(u.uBlur, 0.1 + 0.05*r); gl.uniform1f(u.uSize, 0.9 + 0.5*r);
+  gl.uniform1f(u.uAlpha, Math.min(1, 0.55 + 0.25*r)*Math.min(1, r*15));   // fades in from the first drops
   if (u.uLitS) gl.uniform3fv(u.uLitS, SKY.lit);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, n);
