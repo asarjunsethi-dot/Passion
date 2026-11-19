@@ -28,7 +28,7 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
   thrusters must look realistic (water jet spray, not lasers); boats cannot reverse (S only brakes); minimal popups;
   no graphics or pixel controls; controls live behind a small "?" button; splashes include droplets;
   multiplayer added so the owner can see other people playing; players can enter a name; inactive players
-  drop off the list after 5 minutes.
+  drop off the list after 5 minutes; realistic rain that comes and goes at random strengths and builds slowly.
 
 ## Map of `web/index.html` (search for these markers)
 
@@ -44,7 +44,9 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
 | Meshes | `MESH_VS`, `MESH_FS`, `drawMeshes`, `INST` | Boats and beach balls. Each instance holds x, y, z, heading, scale, tint, roll, pitch, so all balls are one draw call and each boat type is one. Palette row 7 glows. |
 | Boats | `BOATS`, `selectBoat`, `buildBoat(spec)`, `boatMeshFor` | Five specs: Runabout, Speedster, Hydro (catamaran), Jet Ski, Cruiser, with mesh parameters and physics. |
 | Beach balls | `spawnFloaters`, `updateFloaters`, `buildBall` | Every hull pushes them (other sailors' too). Each player keeps their own copy, so balls can differ between screens. |
-| Sky cycle | `CYCLE` (600 s), `updateSky`, `SKY` | About 5 minutes of day then 5 of night. Each player has their own clock. |
+| Sky cycle | `CYCLE` (600 s), `updateSky`, `SKY` | About 5 minutes of day then 5 of night. Each player has their own clock. Overcast dims direct light, greys the ambient light and fades shadows. |
+| Weather | `wxEvent`, `wxAt`, `weather`, `updateWeather` | Each 25 minute window has a 50% chance of one rain event: clouds gather 3 minutes ahead, drizzle builds over 2 to 7 minutes to a random peak (0.12 to 1, light rain more common), holds 1 to 8 minutes with showers swelling and easing in bands, clears over 1.5 to 5.5 minutes, clouds linger 3 minutes. About 30 events and 21% of the time raining per day. Computed from the real clock and the lake seed, so all players see the same rain with no network messages (as long as device clocks agree). `weather.wet` soaks up in a few minutes of rain and dries over about 5. |
+| Rain | `updateRain`, `drops`, `pushStreak`, sprite type 14, `rainRings` in `waterFS` | Up to 1,600 falling streaks over the view, slanted by the wind, at least 1.5 pixels wide. Raindrop rings and splashes on the lake are drawn in the water shader (two grids of cells, only computed while raining). Rain also adds haze, roughens the ripples, greys the sky reflection, hides sun glints and stars, darkens wet ground, bends the grass harder and pushes the beach balls faster. The clock icon becomes an umbrella. |
 | Shadows | `ensureShadowTarget`, `COMPOSITE_FS` | Meshes flattened along the light into a shadow buffer, then multiplied over the scene. |
 | Physics | `stepBoat`, `contact`, `jump`, `thrusterState(b, side)` | Thrust only forward; S brakes; Q/E strafe; Space jump; spin at low throttle. Boats bump each other (each client moves only its own boat, half impulse each). |
 | Effects | `boatEffects(b, dt)`, `throwSpray`, `updateSparks` | Wake foam, jet spray and landing splashes for any boat, yours or a remote one near the camera. |
@@ -56,7 +58,7 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
 | Render scale | `adaptScale`, `resize`, `pixelCap` | Automatic: starts at 2.3 million pixels, drops a fifth after 2 slow seconds (down to 0.6 million), climbs back after 8 smooth seconds but never above a budget that was slow. |
 
 Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, F watch others, H help, R reset.
-URL options: `?seed=N` (lake N, private room), `?name=Ana` (name shown to others, remembered), `?offline` (no network).
+URL options: `?rain=0.7` (force a rain level from 0 to 1; `?rain=0` forces dry, useful for repeatable tests), `?seed=N` (lake N, private room), `?name=Ana` (name shown to others, remembered), `?offline` (no network).
 
 ## Multiplayer details
 
@@ -74,7 +76,7 @@ URL options: `?seed=N` (lake N, private room), `?name=Ana` (name shown to others
 ## Testing
 
 Debug handle: `window.__river` exposes `boat`, `cam`, `input`, `state`, `ready`, `floaters`, `seed`, `pixelCap`,
-`id`, `away`, `setIdle(ms)`, `setName(name)`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
+`id`, `weather` (rain, cloud, wet, drops), `setRain(v)` (null returns to the schedule), `wxAt(seconds)`, `away`, `setIdle(ms)`, `setName(name)`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
 (update and draw), `step(dt)` (physics only, fast), `setClock(seconds)`, `startGame()`, `resetGame()`, `bankDist(x, y)`.
 
 ```bash
@@ -118,5 +120,6 @@ it and insert into it); dropping it is reasonable. Another older project `ember`
 
 - Frame rate on real graphics cards has still not been measured; the automatic render scale is the fallback.
   A 30 hertz display reads as slow and will settle at a lower resolution.
-- Balls, sky clock and spray are local to each player; only boats are shared.
+- Balls, sky clock and spray are local to each player; only boats are shared. Weather is shared through the clock.
+- Tests that move the beach balls depend on the current weather (the breeze freshens in rain); pass `?rain=0` for repeatable numbers.
 - Camera is fixed north up; the tilted view, grass and shadows depend on that.

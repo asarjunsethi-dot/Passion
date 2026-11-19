@@ -345,6 +345,7 @@ in vec2 vNdc; out vec4 o;
 uniform vec2 uCam, uHalf;
 uniform float uTime, uWorld, uSimN, uHasSim, uSinT, uCosT;
 uniform vec2 uSimC;
+uniform float uRain, uOvercast, uWet;
 uniform sampler2D uSim, uFoam, uCaus;
 ${WORLD_GLSL}
 ${NOISE_GLSL}
@@ -369,6 +370,26 @@ vec3 toSrgb(vec3 c){ return pow(clamp(c, 0.0, 1.0), vec3(1.0/2.2)); }
 // Water depth in meters (negative on land) from the distance to the shore:
 // a sandy shelf that drops to about 14 m in open water.
 float depthAt(float d){ return d < 0.0 ? d : 14.0*pow(min(d/40.0, 1.0), 0.75); }
+
+// Raindrop rings. Two jittered grids; in every cell a drop may land once per cycle (more of them
+// in heavier rain), then its ring spreads and fades. Returns the rings' slope (xy) and the brief
+// bright splash where a drop has just landed (z).
+vec3 rainRings(vec2 p, float t, float amount){
+  vec3 res = vec3(0.0);
+  for (int L=0; L<2; L++){
+    float sc = L == 0 ? 0.55 : 0.8, fl = float(L);   // cells of about 1.8 and 1.25 m: rings big enough to read from this height
+    vec2 q = p*sc + fl*17.3, cell = floor(q), f = fract(q);
+    vec2 h = hash22(cell + fl*7.1);
+    float period = 0.8 + 0.7*h.y, cyc = t/period + h.x*7.0, ph = fract(cyc), k = floor(cyc);
+    if (hash21(cell*0.73 + k*1.37 + fl*3.1) > amount) continue;
+    vec2 c = 0.3 + 0.4*hash22(cell + k*3.17), dv = f - c;
+    float r = length(dv), R = 0.02 + ph*0.28, x = (r - R)/0.03;
+    float fade = (1.0 - ph)*(1.0 - ph);
+    res.xy += dv/(r + 1e-4)*(-2.0*x*exp(-x*x))*0.12*fade;
+    res.z += exp(-x*x)*fade*0.5 + (1.0 - smoothstep(0.0, 0.04, r))*(1.0 - smoothstep(0.0, 0.1, ph));   // the bright crest of the ring, and the splash
+  }
+  return res;
+}
 
 vec3 sampleCaustics(vec2 uv){
   uv *= CAUSTICS_SCALE;
@@ -400,7 +421,9 @@ void main(){
       if (i >= 3) crest += sin(ph);
     }
     float rough = mix(0.35, 1.0, smoothstep(0.25, 0.75, fbm(p*0.03 + vec2(uTime*0.012, -uTime*0.007))));   // calm slicks and rougher patches
-    g *= rough*smoothstep(0.0, 1.2, D);
+    g *= rough*smoothstep(0.0, 1.2, D)*(1.0 + 0.8*uRain);            // wind with the rain roughens the lake
+    vec3 drops = uRain > 0.003 ? rainRings(p, uTime, uRain) : vec3(0.0);
+    g += drops.xy*smoothstep(0.0, 0.3, D);
     vec2 simG = vec2(0.0);
     if (uHasSim > 0.5){
       float dx = uWorld/uSimN;
@@ -429,14 +452,16 @@ void main(){
     vec3 skyR = min(skyColor(vec3(R.x, R.z, -R.y)), vec3(1.0));
     float cl = cloudAt(p*0.6 + vec2(0.0, 40.0) + R.xy*25.0);
     skyR = mix(skyR, vec3(0.86)*(0.2 + 0.8*uDay), min(cl*2.5, 1.0)*0.45);
-    skyR += smoothstep(0.9, 0.95, texture(uStars, p*0.012 + R.xy*0.15).r)*clamp(-uBlend*2.0, 0.0, 1.0)*0.9;
+    skyR += smoothstep(0.9, 0.95, texture(uStars, p*0.012 + R.xy*0.15).r)*clamp(-uBlend*2.0, 0.0, 1.0)*0.9*(1.0 - uOvercast);
+    skyR = mix(skyR, vec3(0.6, 0.64, 0.68)*(0.12 + 0.88*uDay), uOvercast*0.85);   // a grey overcast sky in the water
     float F = 0.02 + 0.98*pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
     float refl = clamp(0.07 + F*1.5 + 0.14*(vNdc.y*0.5 + 0.5), 0.0, 0.5)*smoothstep(0.0, 0.35, D);
     vec3 lit = mix(body, toLinear(skyR), refl);
     // ---- sun (or moon) glints on ripple crests ----
     float tw = vnoise(p*2.3 + vec2(uTime*0.7, -uTime*0.5));
     float glint = smoothstep(2.5, 2.95, crest*rough)*smoothstep(0.7, 0.9, tw)*smoothstep(0.3, 1.2, D);
-    lit += uLightCol*glint*mix(0.12, 3.0, uDay)*smoothstep(0.05, 0.3, uLightDir.z);
+    lit += uLightCol*glint*mix(0.12, 3.0, uDay)*smoothstep(0.05, 0.3, uLightDir.z)*(1.0 - 0.9*uOvercast);
+    lit += (sunIn + 0.04)*drops.z*0.3*smoothstep(0.0, 0.3, D);    // ring crests and splashes catch the light
     // ---- foam at the shore: lapping edge and ripples rolling in ----
     float lap = 0.18 + 0.12*sin(uTime*0.9 + fbm(p*0.15)*6.0);
     float shape = texture(uFoam, p*0.35 + vec2(uTime*0.02, 0.0)).r;
@@ -458,12 +483,13 @@ void main(){
     vec3 grass = palette(texture(uGroundNoise, p*0.1).r);            // ground.gdshader
     float gm = smoothstep(1.0, 2.3, bd + (n1-0.5)*1.7);
     vec3 land = mix(sand, grass, gm);
-    land *= groundShade()*cloudShade(p);
+    land *= groundShade()*cloudShade(p)*mix(1.0, 0.7 + 0.12*gm, uWet);   // wet ground is darker, sand most
     float landMask = smoothstep(0.06, -0.06, d);
     col = d <= -0.3 ? land : mix(col, land, landMask);
   }
   vec3 hazeC = mix(mix(vec3(0.08,0.12,0.18), vec3(0.85,0.55,0.4), clamp(1.0 - abs(uBlend)*3.0, 0.0, 1.0)*step(-0.05, uBlend)), vec3(0.7,0.82,0.9), clamp(uBlend*2.5, 0.0, 1.0));
   col = mix(col, hazeC, smoothstep(0.1, 1.0, vNdc.y)*0.16);          // aerial haze toward the far edge
+  col = mix(col, vec3(0.5, 0.55, 0.6)*(0.2 + 0.8*uDay), uRain*(0.1 + 0.14*smoothstep(-1.0, 1.0, vNdc.y)));   // rain haze
   col *= 1.0 - 0.22*dot(vNdc, vNdc)*0.5;                                        // soft vignette
   o = vec4(col, 1.0);
 }`;
@@ -575,7 +601,11 @@ void main(){
   float seed = vP.z;
   vec2 q = vLocal;
   vec4 res;
-  if (type == 13){                                          // a water droplet: small, clear, with a highlight
+  if (type == 14){                                          // a falling raindrop, a streak blurred by its speed
+    float across = 1.0 - abs(q.x), along = smoothstep(-1.0, 0.7, q.y)*(1.0 - smoothstep(0.85, 1.0, q.y));
+    o = vec4(vec3(0.82, 0.87, 0.92)*min(uLitS*1.6 + 0.03, vec3(1.0)), across*along*vQ.z);   // lighter than the lit scene, so it reads against grey water
+    return;
+  } else if (type == 13){                                   // a water droplet: small, clear, with a highlight
     vec2 n = q/vQ.x; float r = length(n);
     float a = (1.0 - smoothstep(0.55, 1.0, r))*vQ.z;
     vec3 c = mix(vec3(0.72, 0.88, 0.98), vec3(1.0), 1.0 - smoothstep(0.0, 0.55, length(n - vec2(-0.3, 0.3))));
@@ -728,7 +758,7 @@ let grassReady = false;
 const WIND_VELOCITY = [0.9, 0.35];   // the supplied material has (0, 0): no wind
 
 // sprite batch
-const MAX_SPRITES = 2600, FLOATS = 12;
+const MAX_SPRITES = 4400, FLOATS = 12;
 const sprData = new Float32Array(MAX_SPRITES*6*FLOATS);
 let sprCount = 0;
 const sprVao = gl.createVertexArray(), sprBuf = gl.createBuffer();
@@ -751,6 +781,20 @@ function pushSprite(x, y, half, type, seed, q0, q2){
     sprData[o++] = lx; sprData[o++] = ly;
     sprData[o++] = 0; sprData[o++] = type; sprData[o++] = seed; sprData[o++] = 0;
     sprData[o++] = q0; sprData[o++] = 0; sprData[o++] = q2; sprData[o++] = 0;
+  }
+  sprCount++;
+}
+
+// A raindrop streak: a thin slanted quad from its head (x0, y0) up to its tail (x1, y1).
+function pushStreak(x0, y0, x1, y1, hw, alpha){
+  if (sprCount >= MAX_SPRITES) return;
+  let o = sprCount*6*FLOATS;
+  for (let k=0;k<6;k++){
+    const lx = CORNER_X[k], ly = CORNER_Y[k], t = (ly + 1)*0.5;   // ly 1 is the head (the bottom of the streak)
+    sprData[o++] = x1 + (x0 - x1)*t + lx*hw; sprData[o++] = y1 + (y0 - y1)*t;
+    sprData[o++] = lx; sprData[o++] = ly;
+    sprData[o++] = 0; sprData[o++] = 14; sprData[o++] = 0; sprData[o++] = 0;
+    sprData[o++] = 1; sprData[o++] = 0; sprData[o++] = alpha; sprData[o++] = 0;
   }
   sprCount++;
 }
@@ -1071,6 +1115,47 @@ function buildBall(){                                         // six colored pan
   ballMesh = { vao, count, tex, iA: loc('iA'), iB: loc('iB') };
 }
 
+/* ---------------- weather ----------------
+   Long dry spells, then clouds gather, a drizzle starts and slowly builds to a
+   random peak (light rain is more common than a downpour), showers swell and
+   ease in bands, and it clears. About half of every 25 minute window brings
+   one such event. The schedule comes from the real clock and the lake seed,
+   so every sailor on the lake sees the same rain at the same moment, with no
+   network traffic. ?rain=0.7 forces a level for testing.                    */
+const WX_SLOT = 1500;
+function wxEvent(slot){
+  const R = rng((SEED ^ 0x3c6ef372) + Math.imul(slot, 0x2545f491));
+  R(); R();
+  if (R() > 0.5) return null;
+  const build = 120 + R()*300, hold = 60 + R()*420, clear = 90 + R()*240;
+  return { start: slot*WX_SLOT + R()*(WX_SLOT - 300), build, hold, clear, peak: 0.12 + 0.88*Math.pow(R(), 1.5), seed: R()*100 };
+}
+function wxAt(t){                                             // t: seconds of real time; returns [rain, cloud cover]
+  let rain = 0, cloud = 0;
+  const s0 = Math.floor(t/WX_SLOT);
+  for (let k = s0 - 1; k <= s0; k++){
+    const e = wxEvent(k); if (!e) continue;
+    const u = t - e.start, end = e.build + e.hold + e.clear;
+    cloud = Math.max(cloud, smooth(-180, 0, u)*(1 - smooth(end, end + 180, u))*(0.45 + 0.55*e.peak));   // clouds lead and linger 3 minutes
+    if (u <= 0 || u >= end) continue;
+    const env = u < e.build ? Math.pow(u/e.build, 1.6) : u < e.build + e.hold ? 1 : 1 - smooth(e.build + e.hold, end, u);
+    const band = 0.72 + 0.28*Math.sin(u*0.021 + e.seed)*Math.sin(u*0.0083 + e.seed*1.7);   // showers come in bands
+    rain = Math.max(rain, e.peak*env*band);
+  }
+  return [rain, cloud];
+}
+const RAIN_FORCED = QUERY.has('rain') ? Math.min(1, Math.max(0, +QUERY.get('rain') || 0)) : null;
+const weather = { rain: 0, cloud: 0, wet: 0, forced: RAIN_FORCED };
+function updateWeather(dt, first){
+  let [r, c] = wxAt(Date.now()/1000);
+  if (weather.forced !== null){ r = weather.forced; c = Math.min(1, r*1.4); }
+  c = Math.max(c, Math.min(1, r*1.4));
+  const k = first ? 1 : Math.min(1, dt/3);                    // ease, so a long frame never jumps the weather
+  weather.rain += (r - weather.rain)*k; weather.cloud += (c - weather.cloud)*k;
+  // the ground soaks up in a few minutes of rain and dries over about five
+  weather.wet = first ? Math.min(1, r*2) : Math.min(1, Math.max(0, weather.wet + (weather.rain > 0.03 ? weather.rain*dt/60 : -dt/300)));
+}
+
 /* ---------------- dynamic sky: a full day every 10 minutes ----------------
    About 5 minutes of daylight, then about 5 of night. Colors are the Godot
    sky shader defaults; blend is its LIGHT0_DIRECTION.y (sun height).      */
@@ -1094,6 +1179,13 @@ function updateSky(dt){
   if (b >= 0){ SKY.dir = SKY.sun; SKY.col = mix3([1.0, 0.5, 0.25], [1.0, 0.96, 0.88], smooth(0.0, 0.45, b)).map(v => v*0.82*smooth(-0.02, 0.2, b)); }
   else { SKY.dir = SKY.sun.map(v => -v); SKY.col = [0.5, 0.55, 0.7].map(v => v*0.3*smooth(-0.02, 0.2, -b)); }
   SKY.shadow = 0.32*smooth(0.0, 0.25, Math.abs(b))*(b >= 0 ? 1 : 0.5);
+  const oc = weather.cloud;                                   // overcast: dim direct light, flat grey ambient, faint shadows
+  if (oc > 0){
+    SKY.col = SKY.col.map(v => v*(1 - 0.72*oc));
+    const avg = (SKY.amb[0] + SKY.amb[1] + SKY.amb[2])/3;
+    SKY.amb = SKY.amb.map((v, i) => (v + (avg*(i === 2 ? 1.06 : 1) - v)*0.6*oc)*(1 + 0.15*oc));
+    SKY.shadow *= 1 - 0.85*oc;
+  }
   SKY.lit = SKY.amb.map((a, i) => Math.pow(a + SKY.col[i]*Math.max(SKY.dir[2], 0), 0.4545));
 }
 function setLight(u){
@@ -1126,6 +1218,27 @@ function ensureShadowTarget(){
   gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, shadowTex, 0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+// Falling rain: drops spawned over the view at 6 to 10 m, falling at about 9 m/s and
+// leaning with the wind. Their rings on the lake are drawn by the water shader.
+const drops = [];
+let dropAcc = 0;
+function updateRain(dt){
+  const aspect = canvas.width/Math.max(1, canvas.height), hx = cam.half*aspect + 3, hy = cam.half/COS_T + 3;
+  const wl = Math.hypot(WIND_VELOCITY[0], WIND_VELOCITY[1]), ws = 1 + 4*weather.rain;
+  const wx = WIND_VELOCITY[0]/wl*ws, wy = WIND_VELOCITY[1]/wl*ws, lift = SIN_T/COS_T;
+  dropAcc += weather.rain*hx*hy*4*0.85*dt;                    // about 0.85 drops a square meter falling at once in a downpour
+  for (; dropAcc >= 1; dropAcc--){
+    if (drops.length >= 1600){ dropAcc = 0; break; }
+    const z = 6 + Math.random()*4, sx = cam.x + (Math.random()*2 - 1)*hx, sy = cam.y + (Math.random()*2 - 1)*hy;
+    drops.push({ x: sx, y: sy - z*lift, z, vx: wx, vy: wy, vz: -8.5 - Math.random()*1.5 });   // placed so it starts inside the view
+  }
+  for (let i = drops.length - 1; i >= 0; i--){
+    const d = drops[i];
+    d.x += d.vx*dt; d.y += d.vy*dt; d.z += d.vz*dt;
+    if (d.z <= 0) dropAt(drops, i);
+  }
 }
 
 // Remove item i from an unordered list in constant time (draw order of puffs does not matter).
@@ -1279,7 +1392,7 @@ function updateFloaters(dt){
   for (const r of remotes.values()) if (r.shown) pushers.push(r);
   for (const f of floaters){
     const u = baseFlow(f.x, f.y), k = Math.min(1, dt*0.9), wa = time*0.013 + 1.3;
-    const wx = u[0] + Math.cos(wa)*0.3, wy = u[1] + Math.sin(wa)*0.3;   // current plus a light breeze
+    const br = 0.3 + 0.7*weather.rain, wx = u[0] + Math.cos(wa)*br, wy = u[1] + Math.sin(wa)*br;   // current plus a breeze that freshens in rain
     f.vx += (wx - f.vx)*k; f.vy += (wy - f.vy)*k;
     f.x += f.vx*dt; f.y += f.vy*dt;
     f.rx += f.vy*dt/f.r; f.ry -= f.vx*dt/f.r;                   // roll as they move
@@ -1649,8 +1762,10 @@ function cycleWatch(){
 /* ---------- main update ---------- */
 function update(dt){
   time += dt;
+  updateWeather(dt);
   updateSky(dt);
   updateSparks(dt);
+  updateRain(dt);
   const target = (input.up ? 1 : 0) - (input.down ? 1 : 0);
   const steerT = (input.left ? 1 : 0) - (input.right ? 1 : 0);
   boat.throttle += (target - boat.throttle)*Math.min(1, dt*(Math.abs(target) > Math.abs(boat.throttle) ? 4 : 7));
@@ -1734,6 +1849,7 @@ function drawScene(){
   gl.uniform2f(w.uCam, camX, camY); gl.uniform2f(w.uHalf, halfX, halfY);
   gl.uniform1f(w.uTime, time); gl.uniform1f(w.uWorld, SIM_WORLD); gl.uniform1f(w.uSimN, SIM_N);
   gl.uniform1f(w.uHasSim, simOK ? 1 : 0); gl.uniform2f(w.uSimC, simC.x, simC.y);
+  gl.uniform1f(w.uRain, weather.rain); gl.uniform1f(w.uOvercast, weather.cloud); gl.uniform1f(w.uWet, weather.wet);
   setLight(w);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, simOK ? sim.tex[sim.r] : dummyTex); gl.uniform1i(w.uSim, 0);
   [[foamTex,'uFoam'],[causTex,'uCaus'],[groundNoiseTex,'uGroundNoise']].forEach(([t, name], i) => {
@@ -1749,7 +1865,8 @@ function drawScene(){
     const ox = Math.floor((camX - halfX)/GRASS_CELL) - 3, oy = Math.floor((camY + gHalfY)/GRASS_CELL) + 2;
     gl.useProgram(grassProg); gl.bindVertexArray(emptyVao);
     gl.uniform2f(g.uCam, camX, camY); gl.uniform2f(g.uHalf, halfX, halfY);
-    gl.uniform2f(g.uWindVel, WIND_VELOCITY[0], WIND_VELOCITY[1]);
+    const gust = 1 + 1.5*weather.rain;                          // grass bends harder in a storm
+    gl.uniform2f(g.uWindVel, WIND_VELOCITY[0]*gust, WIND_VELOCITY[1]*gust);
     gl.uniform2i(g.uOrigin, ox, oy); gl.uniform1i(g.uCols, cols);
     gl.uniform1f(g.uCell, GRASS_CELL); gl.uniform1f(g.uTime, time); gl.uniform1f(g.uRandomVariation, 0.0);
     gl.uniform1f(g.uCutStart, 0.4); gl.uniform1f(g.uCutEnd, 0.6);
@@ -1809,6 +1926,22 @@ function drawScene(){
       gl.disable(gl.BLEND);
     }
   }
+  // 8. falling rain over everything; a drop at height z shows z*tan(tilt) up the screen, its streak trails above it
+  if (drops.length){
+    const start = sprCount, lift = SIN_T/COS_T, a = 0.3 + 0.3*weather.rain, hw = 0.75*2*cam.half/canvas.height;   // about 1.5 pixels wide
+    for (const d of drops){
+      const y0 = d.y + d.z*lift;
+      pushStreak(d.x, y0, d.x - d.vx*0.12, y0 - (d.vy + d.vz*lift)*0.12, hw, a);   // the tail is where it was 0.12 s ago (motion blur)
+    }
+    if (sprCount > start){
+      gl.useProgram(sprProg); gl.bindVertexArray(sprVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, sprBuf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, start*6*FLOATS*4, sprData, start*6*FLOATS, (sprCount - start)*6*FLOATS);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawArrays(gl.TRIANGLES, start*6, (sprCount - start)*6);
+      gl.disable(gl.BLEND);
+    }
+  }
   updateTags(cam.x, cam.y, halfX, halfY);
 }
 
@@ -1848,7 +1981,7 @@ function updateHud(){
   const f = followed();
   setText('spd', Math.round(Math.hypot(f.vx, f.vy)*3.6) + ' km/h');
   const hrs = (6 + skyClock/CYCLE*24) % 24;
-  setText('clock', String(Math.floor(hrs)).padStart(2, '0') + ':' + String(Math.floor((hrs % 1)*60)).padStart(2, '0') + (SKY.sun[2] >= 0 ? '  ☀' : '  ☾'));
+  setText('clock', String(Math.floor(hrs)).padStart(2, '0') + ':' + String(Math.floor((hrs % 1)*60)).padStart(2, '0') + (weather.rain > 0.05 ? '  ☂' : SKY.sun[2] >= 0 ? '  ☀' : '  ☾'));
   const bw = Math.round(boat.boost*100) + '%';
   if (hudCache.boost !== bw){ hudCache.boost = bw; el('boostbar').style.width = bw; }
   const others = online.size;
@@ -1919,6 +2052,7 @@ function frame(now){
   if (!manual){ adaptScale(raw); resize(); update(dt); drawScene(); }
   requestAnimationFrame(frame);
 }
+updateWeather(0, true);
 selectBoat(boatIndex, true);
 resetGame();
 requestAnimationFrame(frame);
@@ -1928,7 +2062,8 @@ netConnect();
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; },
   startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, step(dt){ update(dt); }, baseFlow,
   get floaters(){ return floaters; }, get ready(){ return true; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; },
-  get seed(){ return SEED; }, get away(){ return away; }, setIdle(ms){ lastInput = Date.now() - ms; }, setName, get pixelCap(){ return pixelCap; }, id: myId, get watching(){ return watching; }, watch: cycleWatch,
+  get seed(){ return SEED; }, get weather(){ return { rain: weather.rain, cloud: weather.cloud, wet: weather.wet, drops: drops.length }; },
+  setRain(v){ weather.forced = v == null ? null : Math.min(1, Math.max(0, +v)); updateWeather(0, true); updateSky(0); }, wxAt, get away(){ return away; }, setIdle(ms){ lastInput = Date.now() - ms; }, setName, get pixelCap(){ return pixelCap; }, id: myId, get watching(){ return watching; }, watch: cycleWatch,
   get net(){ return { status: net.status, joined: net.joined, sent: net.sent, recv: net.recv, online: [...online.values()],
     remotes: [...remotes.values()].filter(r => r.shown).map(r => ({ id: r.id, name: r.name, b: r.b, x: r.x, y: r.y, th: r.th, z: r.z })) }; } };
 })();
