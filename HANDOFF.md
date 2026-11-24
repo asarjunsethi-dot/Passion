@@ -56,7 +56,7 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
 | Away | `AWAY_MS`, `markActive`, `away` | After 5 minutes without a key, click, touch or mouse movement you leave the other sailors' list (presence untrack) and stop sending, but still see them. Any input rejoins at once. A hidden tab counts as inactive. |
 | Render scale | `adaptScale`, `resize`, `pixelCap` | Automatic: starts at 2.3 million pixels, drops a fifth after 2 slow seconds (down to 0.6 million), climbs back after 8 smooth seconds but never above a budget that was slow. |
 
-Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, F watch others, H help, R reset.
+Controls: W thrust, S brake, A/D steer, Q/E strafe, Shift boost, Space jump, 1 to 5 boat, F watch others, H help, M sound, R reset.
 Gamepad (standard mapping, `pollGamepad`): left stick steers and throttles, right trigger throttle, left trigger brake (analog),
 A jump, X boost, bumpers strafe, Y watch, Start restart. Touch (`#touch`, coarse pointers only): a stick for analog steering and
 throttle, plus boost and jump buttons. Gamepad axes feed `input.ax` / `input.ay` beside the key booleans.
@@ -66,6 +66,18 @@ to face it (camera is north up) with yaw damping, throttling by stick distance a
 90 degree turns settle in 1.2 to 1.5 s with 4 to 6 degrees of overshoot. Release coasts. Vibration on jumps and hard bumps
 (`buzz`). Phones (`COARSE`, coarse pointer) start at 1 million pixels and run a 256 cell wave simulation with the wave
 constant scaled so wakes keep their real speed; browser gestures (pull to refresh, bounce, long press) are blocked.
+
+Responsiveness: throttle reaches full in 0.35 s (was 0.57), steering ramps at 10 per second, lets go at 13 and swings
+across at 18; turning force and yaw damping are both 1.35 times stronger (same top turn rate, reached sooner: 63 degrees
+per second 0.3 s into a turn, was 45). Boost blends in over a tenth of a second (`boostAmt`). Jump (`jump`, `tryJump`)
+always works, takes 0.15 boost when there is some, remembers a press for 0.2 s (`jumpBuf`) so a press just before
+landing fires on touchdown, and ignores key repeat. Measured by `tools/tests/response.js [port]`.
+
+Sound (`SND`, `sndInit`, `sndUpdate`, `sfxJump`, `sfxLand`, `sfxBump`, `sfxBall`, `sfxClick`): all synthesized with Web
+Audio, no files. Engine (two detuned oscillators through a lowpass that opens with throttle and boost), jet hiss, water
+rushing past (with speed, quiet in the air), faint lake ambience; one shots for jump, landing, bumps, ball hits and boat
+select (bumps and balls rate limited). Starts on the first key or tap, pauses with the tab hidden; M or the note button
+(`#sndbtn`) mutes, remembered in `riverrun.sound`. Checked by `tools/tests/sound.js`.
 
 Smoothness: `steadyDt` steps steady frames by the display's own interval (median of the last 15) so timestamp jitter
 does not shimmer, while a real hitch keeps its length. The water blends the last two wave simulation steps (`uSimA`), so

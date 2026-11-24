@@ -35,6 +35,10 @@
   #helpbtn{position:fixed;left:16px;top:14px;width:24px;height:24px;border-radius:50%;border:1px solid rgba(255,255,255,.55);background:transparent;
     color:#fff;font:600 13px/22px system-ui,sans-serif;padding:0;cursor:pointer;opacity:.75}
   #helpbtn:hover{opacity:1}
+  #sndbtn{position:fixed;left:48px;top:14px;width:24px;height:24px;border-radius:50%;border:1px solid rgba(255,255,255,.55);background:transparent;
+    color:#fff;font:600 12px/22px system-ui,sans-serif;padding:0;cursor:pointer;opacity:.75}
+  #sndbtn:hover{opacity:1}
+  #sndbtn.off{opacity:.3;text-decoration:line-through}
   #helppanel{position:fixed;left:16px;top:46px;font-size:12px;line-height:1.7;color:#fff;text-shadow:0 1px 6px rgba(0,0,0,.55);letter-spacing:.04em}
   .intro{pointer-events:auto;text-align:center;transform:translateY(-110px);color:#fff;text-shadow:0 1px 10px rgba(0,0,0,.45)}
   .intro h1{margin:0 0 14px;font-size:30px;font-weight:300;letter-spacing:.32em;text-transform:uppercase}
@@ -78,7 +82,8 @@
 </div>
 <div id="tags"></div>
 <button id="helpbtn" aria-label="Controls">?</button>
-<div id="helppanel" class="hide"><span id="helpkeys">W&nbsp;thrust<br>S&nbsp;brake<br>A&nbsp;D&nbsp;steer<br>Q&nbsp;E&nbsp;strafe<br>Shift&nbsp;boost<br>Space&nbsp;jump<br>1&ndash;5&nbsp;boat<br>F&nbsp;watch others<br>R&nbsp;restart<br>gamepad&nbsp;works&nbsp;too</span><span id="helptouch">left&nbsp;thumb: drag where to go<br>further&nbsp;=&nbsp;faster<br>let&nbsp;go&nbsp;to&nbsp;coast<br>&#8679;&nbsp;boost &nbsp;&#10514;&nbsp;jump<br>tap&nbsp;the&nbsp;sailor&nbsp;count&nbsp;to&nbsp;watch</span></div>
+<button id="sndbtn" aria-label="Sound on or off" title="Sound (M)">&#9835;</button>
+<div id="helppanel" class="hide"><span id="helpkeys">W&nbsp;thrust<br>S&nbsp;brake<br>A&nbsp;D&nbsp;steer<br>Q&nbsp;E&nbsp;strafe<br>Shift&nbsp;boost<br>Space&nbsp;jump<br>1&ndash;5&nbsp;boat<br>F&nbsp;watch others<br>M&nbsp;sound<br>R&nbsp;restart<br>gamepad&nbsp;works&nbsp;too</span><span id="helptouch">left&nbsp;thumb: drag where to go<br>further&nbsp;=&nbsp;faster<br>let&nbsp;go&nbsp;to&nbsp;coast<br>&#8679;&nbsp;boost &nbsp;&#10514;&nbsp;jump<br>tap&nbsp;the&nbsp;sailor&nbsp;count&nbsp;to&nbsp;watch</span></div>
 <div id="toast"></div>
 
 <div id="start" class="panel">
@@ -840,7 +845,7 @@ function selectBoat(i, silent){
   try { localStorage.setItem('riverrun.boat', String(i)); } catch(e) {}
   renderBoatSel();
   net.sendAcc = 1;                                            // let the other sailors see the new boat at once
-  if (!silent) toast(SPEC.name);
+  if (!silent){ toast(SPEC.name); sfxClick(); }
 }
 function renderBoatSel(){
   const box = document.getElementById('boatsel'); if (!box) return;
@@ -1205,7 +1210,7 @@ function throwSpray(x, y, ex, ey, speed, up, n, spread, size, bv){
 /* ======================================================================
    Game state and physics
    ====================================================================== */
-const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, steer:0, throttle:0, roll:0, pitch:0, boost:1, boosting:false, z:0, vz:0, strafe:0,
+const boat = { x:0, y:0, th:0, vx:0, vy:0, w:0, steer:0, throttle:0, roll:0, pitch:0, boost:1, boosting:false, boostAmt:0, z:0, vz:0, strafe:0,
                jumpT:0, splash:0, splashSim:0, rs:0, spec: BOATS[0], running:false };
 let state = 'ready';                 // ready | run
 let time = 0;
@@ -1222,7 +1227,7 @@ const particles = [];
 
 function resetGame(){
   boat.x = spawn.x; boat.y = spawn.y; boat.th = spawn.th; boat.vx = 0; boat.vy = 0; boat.w = 0;
-  boat.steer = 0; boat.throttle = 0; boat.roll = 0; boat.pitch = 0; boat.boost = 1; boat.z = 0; boat.vz = 0; boat.strafe = 0; boat.jumpT = 0; boat.splash = 0;
+  boat.steer = 0; boat.throttle = 0; boat.roll = 0; boat.pitch = 0; boat.boost = 1; boat.boostAmt = 0; boat.z = 0; boat.vz = 0; boat.strafe = 0; boat.jumpT = 0; boat.splash = 0; jumpBuf = 0;
   boat.running = false;
   spawnFloaters();
   particles.length = 0; sparks.length = 0;
@@ -1259,6 +1264,7 @@ function contact(wx, wy, n, pen, kind, other){
   if (impact > 1.0){
     if (impact > 3 && cam.shake < 0.3) buzz(18);              // a hard bump, once per knock
     cam.shake = Math.min(1, Math.max(cam.shake, impact/7));
+    sfxBump(impact);
     throwSpray(wx, wy, n[0], n[1], impact*0.6, 1.2 + impact*0.3, Math.min(14, Math.floor(impact*3)), 1.4, 0.12, boat);
     for (let i=0;i<Math.min(8, impact*1.6);i++) spawnFoam(wx + (Math.random()-0.5)*0.6, wy + (Math.random()-0.5)*0.6, n[0]*impact*0.3 + (Math.random()-0.5)*2, n[1]*impact*0.3 + (Math.random()-0.5)*2, 1.2+Math.random(), 0.45, 0.6);
   }
@@ -1271,12 +1277,13 @@ function stepBoat(dt, controlled){
   const rvx = b.vx - u[0], rvy = b.vy - u[1];
   const vf = rvx*fx + rvy*fy, vl = rvx*nx + rvy*ny;
   const thr = controlled ? b.throttle : 0;
-  const thrust = thr > 0 ? thr*sp.thrust*(b.boosting ? sp.boost : 1) : 0;   // no reverse: S only brakes
+  const ba = b === boat ? b.boostAmt : (b.boosting ? 1 : 0);   // boost blends in over a tenth of a second
+  const thrust = thr > 0 ? thr*sp.thrust*(1 + (sp.boost - 1)*ba) : 0;   // no reverse: S only brakes
   const air = b.z > 0.001 || b.vz > 0;
   const wet = air ? 0.08 : 1;                                  // airborne: almost no water drag or grip
   const Ff = (air ? 0 : thrust) - (sp.lin + sp.quad*Math.abs(vf) + (thr < 0 ? -thr*2.2 : 0))*vf*wet;   // long axis: slippery
   const strafe = controlled && !air ? b.strafe : 0;            // pods turned sideways slide the boat
-  const grip = sp.grip*(b.boosting ? 0.57 : 1)*(Math.abs(strafe) > 0.1 ? 0.3 : 1);   // boosting or strafing loosens the keel
+  const grip = sp.grip*(1 - 0.43*ba)*(Math.abs(strafe) > 0.1 ? 0.3 : 1);   // boosting or strafing loosens the keel
   const Fl = 7.5*strafe - (grip + 0.8*Math.abs(vl))*vl*wet;
   b.vx += (Ff*fx + Fl*nx)*dt; b.vy += (Ff*fy + Fl*ny)*dt;
   if (air){
@@ -1286,7 +1293,8 @@ function stepBoat(dt, controlled){
   const rudder = Math.min(1, (Math.abs(vf) + Math.abs(thrust)*0.6)/4);
   const dir = vf < -0.4 ? -1 : 1;
   // jets give steering even when slow; at speed the rudder takes over and yaw is capped so turns stay controllable
-  const torque = (controlled ? b.steer : 0) * (air ? 0.3 : 1) * (sp.turn * (0.45 + 0.55*rudder) * dir + (Math.abs(b.throttle) < 0.2 ? 3.2 : 0)) * (1 - 0.25*Math.min(1, Math.abs(vf)/10)) - 3.1*b.w - 0.3*vl*(vf >= 0 ? 1 : -1);
+  // turning force and yaw damping both scaled by 1.35: the same top turn rate, reached about a third sooner
+  const torque = 1.35*(controlled ? b.steer : 0) * (air ? 0.3 : 1) * (sp.turn * (0.45 + 0.55*rudder) * dir + 3.2*(1 - smooth(0.1, 0.35, Math.abs(b.throttle)))) * (1 - 0.25*Math.min(1, Math.abs(vf)/10)) - 4.2*b.w - 0.3*vl*(vf >= 0 ? 1 : -1);
   b.w += torque*dt;
   b.x += b.vx*dt; b.y += b.vy*dt; b.th += b.w*dt;
 
@@ -1351,6 +1359,7 @@ function updateFloaters(dt){
           const j = -1.7*rel/(1/f.m + (mine ? 1 : 0));          // a beach ball weighs almost nothing (big ones a bit more)
           f.vx += nx*j/f.m; f.vy += ny*j/f.m;
           if (mine){ boat.vx -= nx*j; boat.vy -= ny*j; }
+          if (mine && -rel > 1.2) sfxBall(-rel);
           if (-rel > 2) throwSpray(f.x, f.y, nx, ny, -rel*0.5, 1.5 + -rel*0.25, Math.min(16, Math.floor(-rel*2)), 1.2, 0.12, b);
           if (-rel > 2) for (let i=0;i<5;i++) spawnFoam(f.x, f.y, nx*2 + (Math.random()-0.5)*2, ny*2 + (Math.random()-0.5)*2, 0.9, 0.35, 0.7);
         }
@@ -1385,9 +1394,15 @@ function thrusterState(b, side){
   else { t.dir = b.th - b.steer*0.3; t.open = Math.max(0, thr)*(b.boosting ? 1.25 : 0.85) + (b.running ? 0.12 : 0.06); }
   return t;
 }
-function jump(){                                              // pods fire straight down: the boat leaves the water
-  if (state !== 'run' || boat.z > 0.01 || boat.boost < 0.3) return;
-  boat.vz = 6.5; boat.z = 0.001; boat.boost -= 0.3; boat.jumpT = 0.35; buzz(15);
+// Jump: pods fire straight down and the boat leaves the water. It always works (it takes a little
+// boost when there is some, never needs it), and a press made while still in the air is remembered
+// for 0.2 s, so pressing just before landing jumps again the moment the hull touches the water.
+let jumpBuf = 0;
+function jump(){ jumpBuf = 0.2; tryJump(); }
+function tryJump(){
+  if (state !== 'run' || boat.z > 0.01 || boat.vz > 0) return;
+  boat.vz = 6.5; boat.z = 0.001; boat.boost = Math.max(0, boat.boost - 0.15); boat.jumpT = 0.35; jumpBuf = 0;
+  buzz(15); sfxJump();
   jumpBurst(boat);
 }
 function jumpBurst(b){
@@ -1423,7 +1438,7 @@ function boatEffects(b, dt){
   if (b.splash > 0){                                          // landing after a jump
     for (let i=0;i<26*b.splash;i++){ const a = Math.random()*Math.PI*2, r = 0.6 + Math.random()*0.8; spawnFoam(b.x + Math.cos(a)*r, b.y + Math.sin(a)*r*1.4, Math.cos(a)*4*b.splash, Math.sin(a)*4*b.splash, 1.4, 0.55, 0.9); }
     for (let i=0;i<12;i++){ const a = Math.random()*Math.PI*2; throwSpray(b.x, b.y, Math.cos(a), Math.sin(a), 3*b.splash, 3.5*b.splash, 6, 1.5, 0.2, b); }
-    if (b === followed()) cam.shake = Math.max(cam.shake, 0.35*b.splash);
+    if (b === followed()){ cam.shake = Math.max(cam.shake, 0.35*b.splash); sfxLand(b.splash); }
     b.splashSim = b.splash; b.splash = 0;
   }
 }
@@ -1721,12 +1736,13 @@ function update(dt){
       target = m*(0.25 + 0.75*Math.max(0, Math.cos(diff)));
     } else { steerT = 0; target = 0; }
   }
-  boat.throttle += (target - boat.throttle)*Math.min(1, dt*(Math.abs(target) > Math.abs(boat.throttle) ? 4 : 7));
+  boat.throttle += (target - boat.throttle)*Math.min(1, dt*(Math.abs(target) > Math.abs(boat.throttle) ? 6.5 : 10));
   // steering eases in, lets go a little faster, and swings across quickest so a counter steer feels immediate
-  const steerRate = steerT === 0 ? 10 : steerT*boat.steer < 0 ? 14 : 7;
+  const steerRate = steerT === 0 ? 13 : steerT*boat.steer < 0 ? 18 : 10;
   boat.steer    += (steerT - boat.steer)*Math.min(1, dt*steerRate);
   boat.boosting = (input.boost || input.padBoost || input.touchBoost) && boat.boost > 0.02 && boat.throttle > 0.3 && state === 'run';
   boat.boost = Math.min(1, Math.max(0, boat.boost + (boat.boosting ? -0.32 : 0.14)*dt));
+  boat.boostAmt += ((boat.boosting ? 1 : 0) - boat.boostAmt)*Math.min(1, dt*10);
   const strafeT = clampN((input.strafeR ? 1 : 0) - (input.strafeL ? 1 : 0) + (+input.padStrafe || 0), -1, 1);
   boat.strafe += (strafeT - boat.strafe)*Math.min(1, dt*8);
   boat.jumpT = Math.max(0, boat.jumpT - dt);
@@ -1738,12 +1754,13 @@ function update(dt){
     const n = Math.max(1, Math.ceil(dt/(1/120))), h = dt/n;
     for (let i=0;i<n;i++) stepBoat(h, true);
   }
+  if (jumpBuf > 0){ jumpBuf = Math.max(0, jumpBuf - dt); if (jumpBuf > 0) tryJump(); }   // a jump pressed just before landing
 
   // the hull banks into turns and lifts its bow with speed
   const u = baseFlow(boat.x, boat.y), fx = -Math.sin(boat.th), fy = Math.cos(boat.th);
   const vfwd = (boat.vx - u[0])*fx + (boat.vy - u[1])*fy;
   boat.roll  += (-boat.steer*Math.min(1, Math.abs(vfwd)/6)*0.14 - boat.w*0.02 - boat.roll)*Math.min(1, dt*4);
-  boat.pitch += (0.05*Math.min(1, Math.max(0, vfwd)/8) + 0.035*Math.max(0, boat.throttle) + (boat.boosting ? 0.03 : 0) + boat.vz*0.025 - boat.pitch)*Math.min(1, dt*3);
+  boat.pitch += (0.05*Math.min(1, Math.max(0, vfwd)/8) + 0.035*Math.max(0, boat.throttle) + 0.03*boat.boostAmt + boat.vz*0.025 - boat.pitch)*Math.min(1, dt*3);
 
   // wake, jets and splashes: your boat always, other sailors when near the camera
   boatEffects(boat, dt);
@@ -1773,6 +1790,7 @@ function update(dt){
   cam.shake = Math.max(0, cam.shake - dt*2.2);
 
   netSend(dt);
+  sndUpdate();
   updateHud();
 }
 
@@ -1923,14 +1941,112 @@ function toast(msg){
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ''; }, 1100);
 }
 
+/* ---------- sound: all synthesized with Web Audio, no files ----------
+   A continuous engine (two detuned oscillators through a filter that opens with throttle and
+   boost, with a slight wobble), the hiss of the water jets, water rushing past the hull (louder
+   and brighter with speed, quiet in the air) and a faint lapping of the lake. One shot sounds:
+   jump, landing splash, bumps, beach ball hits, boat select. Audio starts on the first key, tap
+   or click (browsers require that), pauses while the tab is hidden, and M or the note button
+   turns it off (remembered).                                                                  */
+const SND = { ctx: null, on: true, master: null, last: {} };
+try { SND.on = localStorage.getItem('riverrun.sound') !== 'off'; } catch(e) {}
+function sndInit(){
+  if (SND.ctx || !SND.on) return;
+  const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+  let c; try { c = new AC(); } catch(e) { return; }
+  SND.ctx = c;
+  const comp = c.createDynamicsCompressor(); comp.threshold.value = -16; comp.ratio.value = 4; comp.connect(c.destination);
+  const master = SND.master = c.createGain(); master.gain.value = 0.8; master.connect(comp);
+  const n = c.sampleRate*2, buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random()*2 - 1;
+  SND.noise = buf;
+  const loop = () => { const src = c.createBufferSource(); src.buffer = buf; src.loop = true; src.start(0, Math.random()*1.9); return src; };
+  const chain = (src, type, f, q, g) => { const fl = c.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q;
+    const gn = c.createGain(); gn.gain.value = g; src.connect(fl); fl.connect(gn); gn.connect(master); return [fl, gn]; };
+  const o1 = c.createOscillator(), o2 = c.createOscillator(); o1.type = 'sawtooth'; o2.type = 'square';
+  o1.frequency.value = 45; o2.frequency.value = 22.6;
+  const mix = c.createGain(); mix.gain.value = 1; o1.connect(mix); const o2g = c.createGain(); o2g.gain.value = 0.5; o2.connect(o2g); o2g.connect(mix);
+  const [ef, eg] = chain(mix, 'lowpass', 260, 2.2, 0);
+  const lfo = c.createOscillator(), lg = c.createGain(); lfo.frequency.value = 6.5; lg.gain.value = 1.2; lfo.connect(lg); lg.connect(o1.frequency); lg.connect(o2.frequency);
+  o1.start(); o2.start(); lfo.start();
+  const [hf, hg] = chain(loop(), 'bandpass', 1600, 0.9, 0);
+  const [wf, wg] = chain(loop(), 'lowpass', 400, 0.7, 0);
+  const [, ag] = chain(loop(), 'lowpass', 320, 0.5, 0.012);
+  Object.assign(SND, { o1, o2, ef, eg, hf, hg, wf, wg, ag });
+}
+function sndKick(){                                           // on any key, tap or click
+  if (!SND.on) return;
+  sndInit();
+  if (SND.ctx && SND.ctx.state === 'suspended' && !document.hidden) SND.ctx.resume().catch(() => {});
+}
+addEventListener('keydown', sndKick, true); addEventListener('pointerdown', sndKick, true);
+document.addEventListener('visibilitychange', () => {
+  if (!SND.ctx) return;
+  if (document.hidden) SND.ctx.suspend().catch(() => {}); else if (SND.on) SND.ctx.resume().catch(() => {});
+});
+function setSound(on){
+  SND.on = on;
+  try { localStorage.setItem('riverrun.sound', on ? 'on' : 'off'); } catch(e) {}
+  el('sndbtn').classList.toggle('off', !on);
+  if (on){ sndKick(); } else if (SND.ctx) SND.ctx.suspend().catch(() => {});
+  toast(on ? 'sound on' : 'sound off');
+}
+const glide = (param, v, tc) => param.setTargetAtTime(v, SND.ctx.currentTime, tc);
+function sndUpdate(){
+  if (!SND.ctx || SND.ctx.state !== 'running') return;
+  const b = boat, sp = Math.hypot(b.vx, b.vy), thr = Math.max(0, b.throttle), air = b.z > 0.05, run = state === 'run', ba = b.boostAmt;
+  const rev = 44 + 62*thr + sp*1.5 + 22*ba + (air ? 22*thr : 0);   // revs climb with throttle, speed and boost, and race when out of the water
+  glide(SND.o1.frequency, rev, 0.08); glide(SND.o2.frequency, rev*0.502, 0.08);
+  glide(SND.ef.frequency, 220 + 820*thr + 420*ba, 0.08);
+  glide(SND.eg.gain, run ? 0.03 + 0.07*thr + 0.03*ba : 0.016, 0.12);
+  glide(SND.hg.gain, run ? (0.012 + 0.05*thr + 0.05*ba)*(air ? 0.45 : 1) : 0, 0.1);
+  glide(SND.hf.frequency, 1300 + 1300*thr + 900*ba, 0.1);
+  glide(SND.wg.gain, air ? 0.008 : Math.min(0.16, sp*0.011), 0.12);
+  glide(SND.wf.frequency, 280 + sp*55, 0.12);
+}
+function sndShot(make, dur){                                  // a one shot sound through its own gain envelope
+  if (!SND.ctx || SND.ctx.state !== 'running') return;
+  const c = SND.ctx, t = c.currentTime; make(c, t, dur);
+}
+function sndNoise(dur, type, f0, f1, g, q){
+  sndShot((c, t) => {
+    const s = c.createBufferSource(); s.buffer = SND.noise;
+    const f = c.createBiquadFilter(); f.type = type; f.Q.value = q || 1;
+    f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const gn = c.createGain(); gn.gain.setValueAtTime(0.0001, t); gn.gain.exponentialRampToValueAtTime(g, t + 0.012); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(f); f.connect(gn); gn.connect(SND.master); s.start(t, Math.random()*1.5); s.stop(t + dur + 0.05);
+  });
+}
+function sndTone(type, f0, f1, dur, g){
+  sndShot((c, t) => {
+    const o = c.createOscillator(); o.type = type;
+    o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const gn = c.createGain(); gn.gain.setValueAtTime(0.0001, t); gn.gain.exponentialRampToValueAtTime(g, t + 0.008); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(gn); gn.connect(SND.master); o.start(t); o.stop(t + dur + 0.05);
+  });
+}
+const sndSpaced = (key, gap) => { const now = performance.now(); if (now - (SND.last[key] || 0) < gap) return false; SND.last[key] = now; return true; };
+function sfxJump(){ sndNoise(0.32, 'bandpass', 500, 2400, 0.2, 1.3); sndNoise(0.22, 'lowpass', 3000, 700, 0.14); sndTone('sine', 130, 260, 0.22, 0.08); }
+function sfxLand(s){ const k = Math.min(1, s); sndNoise(0.45 + 0.3*k, 'lowpass', 2800, 240, 0.1 + 0.22*k); sndTone('sine', 95, 45, 0.25, 0.1*k); }
+function sfxBump(impact){
+  if (!sndSpaced('bump', 150)) return;
+  const g = Math.min(0.42, 0.05*impact); sndTone('sine', 115, 42, 0.24, g); sndNoise(0.2, 'lowpass', 1000, 220, g*0.7);
+}
+function sfxBall(rel){
+  if (!sndSpaced('ball', 60)) return;
+  const g = Math.min(0.2, 0.028*rel); sndTone('triangle', 380 + rel*18, 200, 0.14, g); sndNoise(0.1, 'highpass', 2400, 1600, g*0.35);
+}
+function sfxClick(){ sndTone('sine', 880, 640, 0.07, 0.05); }
+
 /* ---------- input ---------- */
 const keymap = { KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down', KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right', ShiftLeft:'boost', ShiftRight:'boost', KeyQ:'strafeL', KeyE:'strafeR' };
 addEventListener('keydown', e => {
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   if (/^Digit[1-5]$/.test(e.code)){ selectBoat(+e.code.slice(5) - 1); return; }
   if (e.code === 'KeyH'){ el('helppanel').classList.toggle('hide'); return; }
+  if (e.code === 'KeyM'){ if (!e.repeat) setSound(!SND.on); return; }
   if (e.code === 'KeyF'){ if (!e.repeat) cycleWatch(); return; }
-  if (e.code === 'Space'){ e.preventDefault(); if (state === 'ready') startGame(); jump(); return; }
+  if (e.code === 'Space'){ e.preventDefault(); if (e.repeat) return; if (state === 'ready') startGame(); jump(); return; }   // holding it never repeats
   const k = keymap[e.code];
   if (k){
     input[k] = true; e.preventDefault();
@@ -1942,6 +2058,8 @@ addEventListener('keyup', e => { const k = keymap[e.code]; if (k) input[k] = fal
 addEventListener('blur', () => { for (const k in input) input[k] = typeof input[k] === 'number' ? 0 : false; });
 el('go').addEventListener('click', startGame);
 el('helpbtn').addEventListener('click', e => { el('helppanel').classList.toggle('hide'); e.currentTarget.blur(); });
+el('sndbtn').addEventListener('click', e => { setSound(!SND.on); e.currentTarget.blur(); });
+el('sndbtn').classList.toggle('off', !SND.on);
 el('netbox').addEventListener('click', cycleWatch);
 const nick = el('nick');
 nick.value = myName;
@@ -2064,7 +2182,7 @@ if (COARSE) el('go').textContent = 'touch the lower left and drag where to go';
 window.__river = { boat, cam, input, get state(){ return state; }, get simOK(){ return simOK; },
   startGame, resetGame, bankDist, setManual(v){ manual = v; }, tick(dt){ update(dt); drawScene(); }, step(dt){ update(dt); }, baseFlow,
   get floaters(){ return floaters; }, get ready(){ return true; }, setClock(t){ skyClock = t; updateSky(0); }, get particles(){ return particles.length; },
-  get seed(){ return SEED; }, pollGamepad, steadyDt, get frameEst(){ return frameEst; },
+  get seed(){ return SEED; }, sound: SND, pollGamepad, steadyDt, get frameEst(){ return frameEst; },
   get away(){ return away; }, setIdle(ms){ lastInput = Date.now() - ms; }, setName, get pixelCap(){ return pixelCap; }, id: myId, get watching(){ return watching; }, watch: cycleWatch,
   get net(){ return { status: net.status, joined: net.joined, sent: net.sent, recv: net.recv, online: [...online.values()],
     remotes: [...remotes.values()].filter(r => r.shown).map(r => ({ id: r.id, name: r.name, b: r.b, x: r.x, y: r.y, th: r.th, z: r.z })) }; } };
