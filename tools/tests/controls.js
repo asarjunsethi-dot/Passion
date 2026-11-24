@@ -12,7 +12,7 @@ const ARGS = ['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swifts
     window.__pad = { axes: [0, 0, 0, 0], buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })), connected: true, mapping: 'standard' };
     navigator.getGamepads = () => [window.__pad];
   });
-  await p.goto('http://127.0.0.1:8765/index.html?seed=12345&offline=1&rain=0');
+  await p.goto('http://127.0.0.1:8765/index.html?seed=12345&offline=1');
   await p.waitForFunction(() => window.__river && __river.ready);
   const pad = await p.evaluate(() => {
     const R = __river; R.setManual(true);
@@ -37,7 +37,7 @@ const ARGS = ['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swifts
   // 3. touch on a phone: put the thumb down in the lower left, drag right; the boat should turn to face east and go
   const ctx = await browser.newContext({ ...devices['iPhone 13'] });
   const t = await ctx.newPage(); t.on('pageerror', e => errors.push(e.message));
-  await t.goto('http://127.0.0.1:8765/index.html?seed=12345&offline=1&rain=0');
+  await t.goto('http://127.0.0.1:8765/index.html?seed=12345&offline=1');
   await t.waitForFunction(() => window.__river && __river.ready);
   await t.evaluate(() => __river.setManual(true));
   const vp = t.viewportSize(), sx = vp.width*0.25, sy = vp.height*0.8;

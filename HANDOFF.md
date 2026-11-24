@@ -28,7 +28,8 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
   thrusters must look realistic (water jet spray, not lasers); boats cannot reverse (S only brakes); minimal popups;
   no graphics or pixel controls; controls live behind a small "?" button; splashes include droplets;
   multiplayer added so the owner can see other people playing; players can enter a name; inactive players
-  drop off the list after 5 minutes; realistic rain that comes and goes at random strengths and builds slowly.
+  drop off the list after 5 minutes. Rain and weather were added, then removed at the owner's request: always sunny
+  (the day and night cycle stays).
 
 ## Map of `web/index.html` (search for these markers)
 
@@ -39,20 +40,18 @@ Multiplayer: everyone online shares the lake of the day and sees each other's bo
 | Wave simulation | `simFS`, `simStep`, `gatherSources`, `simC` | GPU height field centred on the boat the camera follows; every boat near it adds a wake. Sources skip texels too far away to matter. At most two catch up steps per frame. The water shader fades the field out before its wrapping edge (`uSimC`). |
 | Generated textures | `genFS`, `makeWaterTexture` | Foam, caustics, ground noise, wind, clouds, stars. |
 | Water and ground | `waterFS`, block starting `/* ================= lake water` | Ripples (six wave trains), light absorption, refraction, caustics, sky reflection, sun glints, shore foam, haze. Depth from the shore distance (`depthAt`). |
-| Grass | `grassVS`, `grassFS`, `GRASS_CELL`, `GRASS_ATLAS_PNG` | Port of BinbunGrass. Clumps over water exit the vertex shader early. Wet grass is darker. |
+| Grass | `grassVS`, `grassFS`, `GRASS_CELL`, `GRASS_ATLAS_PNG` | Port of BinbunGrass. Clumps over water exit the vertex shader early. |
 | Sprites | `SPR_VS`, `SPR_FS`, `pushSprite` | Foam and spray puffs (type 6) and clear droplets (type 13). |
 | Meshes | `MESH_VS`, `MESH_FS`, `drawMeshes`, `INST` | Boats and beach balls. Each instance holds x, y, z, heading, scale, tint, roll, pitch, so all balls are one draw call and each boat type is one. Palette row 7 glows. |
 | Boats | `BOATS`, `selectBoat`, `buildBoat(spec)`, `boatMeshFor` | Five specs: Runabout, Speedster, Hydro (catamaran), Jet Ski, Cruiser, with mesh parameters and physics. |
 | Beach balls | `spawnFloaters`, `updateFloaters`, `buildBall` | Every hull pushes them (other sailors' too). Each player keeps their own copy, so balls can differ between screens. |
-| Sky cycle | `CYCLE` (600 s), `updateSky`, `SKY` | About 5 minutes of day then 5 of night. Each player has their own clock. Overcast dims direct light, greys the ambient light and fades shadows. |
-| Weather | `wxRegime`, `wxShower`, `wxAt`, `weather`, `updateWeather` | Two time scales. A regime drifts over hours (noise with 90 and 30 minute periods) between settled and unsettled weather. Unsettled spells thicken the clouds over tens of minutes and spawn showers (at most one starting per 8 minute window): each builds from a drizzle over 1 to 4 minutes to a random peak, swells and eases in bands, holds 0.5 to 5 minutes, clears over 1 to 3.5. The wettest spells add a steady frontal rain for an hour or more, and only they bring downpours. Sampled over a week: raining 25% of the time, about 35 rain spells a day, usually 7 to 17 minutes, sometimes up to almost 2 hours; peaks median 0.47, top 10% above 0.78, highest 0.97. Light rain is drawn with at least 30% of the downpour drop count and brighter streaks, so a drizzle is clearly visible. All from the real clock and the lake seed, so all players share it with no network messages. `weather.gust` sways the rain every few seconds; `weather.wet` soaks up in a few minutes and dries over about five. |
-| Rain | `RAIN_VS`, `RAIN_FS`, `drawRain`, `RAIN_CELL`, `RAIN_PER_CELL`, `rainRings` in `waterFS` | Entirely on the graphics card: the lake is cut into fixed 10 m cells and only cells around the view are drawn, up to 65 drops each. A drop's cell, number and the clock give its landing spot, size (big drops fall faster and splash larger) and cycle: a speed blurred, wind slanted streak, then a splash crown. On the lake each drop also leaves a ring with a smaller trailing ring (water shader, two cell grids) plus a fine stipple from tiny drops. Rain adds haze, roughens ripples, greys the sky reflection, hides glints and stars and the drifting cloud shadows, darkens wet ground and grass, bends the grass and pushes the beach balls. Umbrella next to the clock. |
+| Sky cycle | `CYCLE` (600 s), `updateSky`, `SKY` | About 5 minutes of day then 5 of night. Each player has their own clock. No weather: always clear, with drifting cloud shadows by day. |
 | Shadows | `drawMeshes(true, ...)`, stencil in `drawScene` step 5 | Meshes flattened along the light and multiplied straight over the scene; the stencil buffer lets each pixel darken once. No separate shadow buffer or full screen pass. |
 | Physics | `stepBoat`, `contact`, `jump`, `thrusterState(b, side)` | Thrust only forward; S brakes; Q/E strafe; Space jump; spin at low throttle. Boats bump each other (each client moves only its own boat, half impulse each). |
 | Effects | `boatEffects(b, dt)`, `throwSpray`, `updateSparks` | Wake foam, jet spray and landing splashes for any boat, yours or a remote one near the camera. |
 | Multiplayer | `NET_URL`, `netConnect`, `netMessage`, `remoteState`, `updateRemotes`, `netSend` | Supabase Realtime channel `river-run-<seed>`, raw Phoenix protocol over a WebSocket. Presence lists who is online; broadcasts carry boat state. See below. |
 | Watching | `followed`, `setWatching`, `cycleWatch`, `updateTags` | F (or clicking the "other sailors" line under the clock) cycles the camera through other sailors and back. Any movement key returns to your boat. Name tags sit over boats, or at the screen edge pointing to them. |
-| Render order | `drawScene` | 1 water and ground, 2 grass, 3 foam, 4 shadows (stencil), 5 meshes, 6 spray, 7 rain, then tags. |
+| Render order | `drawScene` | 1 water and ground, 2 grass, 3 foam, 4 shadows (stencil), 5 meshes, 6 spray, then tags. |
 | Interface | `#speedo`, `#clockbox`, `#netbox`, `#tags`, `#helpbtn`, `#helppanel`, `#start`, `#nick` | Speed of the followed boat and your boost, clock, sailor count, "?" controls list (H toggles). `#nick` is the name field on the start screen (`setName`), saved on the device; empty keeps a random "Sailor NN". |
 | Away | `AWAY_MS`, `markActive`, `away` | After 5 minutes without a key, click, touch or mouse movement you leave the other sailors' list (presence untrack) and stop sending, but still see them. Any input rejoins at once. A hidden tab counts as inactive. |
 | Render scale | `adaptScale`, `resize`, `pixelCap` | Automatic: starts at 2.3 million pixels, drops a fifth after 2 slow seconds (down to 0.6 million), climbs back after 8 smooth seconds but never above a budget that was slow. |
@@ -72,8 +71,7 @@ Smoothness: `steadyDt` steps steady frames by the display's own interval (median
 does not shimmer, while a real hitch keeps its length. The water blends the last two wave simulation steps (`uSimA`), so
 wakes move evenly at 120 and 144 hertz. Shader clocks wrap every 4096 s (`shaderTime`). Camera shake is a smooth wobble.
 Other sailors' roll, pitch and controls ease between messages. Spray and foam objects are pooled (`sparkPool`, `foamPool`).
-Rain is depth tested against the boats and its density fades per drop (`uPerF`).
-URL options: `?rain=0.7` (force a rain level from 0 to 1; `?rain=0` forces dry, useful for repeatable tests), `?seed=N` (lake N, private room), `?name=Ana` (name shown to others, remembered), `?offline` (no network).
+URL options: `?seed=N` (lake N, private room), `?name=Ana` (name shown to others, remembered), `?offline` (no network).
 
 ## Multiplayer details
 
@@ -91,7 +89,7 @@ URL options: `?rain=0.7` (force a rain level from 0 to 1; `?rain=0` forces dry, 
 ## Testing
 
 Debug handle: `window.__river` exposes `boat`, `cam`, `input`, `state`, `ready`, `floaters`, `seed`, `pixelCap`,
-`id`, `pollGamepad()`, `steadyDt(raw)`, `frameEst`, `weather` (rain, cloud, wet, regime, drops drawn), `setRain(v)` (null returns to the schedule), `wxAt(seconds)`, `away`, `setIdle(ms)`, `setName(name)`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
+`id`, `pollGamepad()`, `steadyDt(raw)`, `frameEst`, `away`, `setIdle(ms)`, `setName(name)`, `net` (status, online names, shown remotes), `watching`, `watch()`, `setManual(true)`, `tick(dt)`
 (update and draw), `step(dt)` (physics only, fast), `setClock(seconds)`, `startGame()`, `resetGame()`, `bankDist(x, y)`.
 
 ```bash
@@ -135,6 +133,5 @@ it and insert into it); dropping it is reasonable. Another older project `ember`
 
 - Frame rate on real graphics cards has still not been measured; the automatic render scale is the fallback.
   A 30 hertz display reads as slow and will settle at a lower resolution.
-- Balls, sky clock and spray are local to each player; only boats are shared. Weather is shared through the clock.
-- Tests that move the beach balls depend on the current weather (the breeze freshens in rain); pass `?rain=0` for repeatable numbers.
+- Balls, sky clock and spray are local to each player; only boats are shared.
 - Camera is fixed north up; the tilted view, grass and shadows depend on that.
